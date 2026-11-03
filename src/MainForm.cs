@@ -141,10 +141,21 @@ namespace AuraBoxControl
             Resize += delegate { if (WindowState == FormWindowState.Minimized && cfg.MinimizeToTray) Hide(); };
 
             Theme.Prepare(this);
+            // back where it was last time, if that spot is still on a screen (a monitor may have been unplugged)
+            if (cfg.HasWindowPos)
+            {
+                var saved = new Rectangle(cfg.WindowX, cfg.WindowY, Width, Height);
+                foreach (var screen in Screen.AllScreens)
+                {
+                    var seen = Rectangle.Intersect(screen.WorkingArea, saved);
+                    if (seen.Width >= 200 && seen.Height >= 100) { StartPosition = FormStartPosition.Manual; Location = saved.Location; break; }
+                }
+            }
             prepared = true;
             Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnSystemTheme;
 
-            Shown += delegate { Startup(); };
+            Shown += delegate { everShown = true; Startup(); };
+            VisibleChanged += delegate { if (Visible) everShown = true; };   // also when first opened from the tray
             FormClosing += delegate (object s, FormClosingEventArgs e)
             {
                 // with "minimize to the system tray" on, the X hides the window like minimize does; the app keeps running
@@ -152,6 +163,7 @@ namespace AuraBoxControl
                 if (cfg.MinimizeToTray && !exiting && e.CloseReason == CloseReason.UserClosing)
                 {
                     e.Cancel = true;
+                    RememberPosition(); SaveSettings();
                     Hide();
                     if (!toldAboutTray && cfg.ShowNotifications)
                     {
@@ -163,6 +175,7 @@ namespace AuraBoxControl
                 }
                 closing = true;
                 Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnSystemTheme;
+                RememberPosition();
                 StopJob(); SaveSettings(); box.Close(); tray.Visible = false;
             };
         }
@@ -176,6 +189,7 @@ namespace AuraBoxControl
             StartReconnectTimer();
             if (cfg.Rotate) rotateBox.Checked = true;
             ThreadPool.QueueUserWorkItem(delegate { GetWeather(false); });
+            if (UpdateRepo.Length > 0) CheckForUpdates(false);   // quietly; only says something when there's a newer version
             // portable app: if it was moved, point the "start with Windows" entry at the new location
             string run = ReadRunValue();
             bool tray = run.Contains("--tray");
@@ -239,8 +253,18 @@ namespace AuraBoxControl
         void RestoreFromTray() { Show(); WindowState = FormWindowState.Normal; Activate(); }
 
         bool exiting, toldAboutTray;   // exiting: really quit, even with "minimize to the system tray" on
+        bool everShown;                // the window has been on screen at least once (see RememberPosition)
 
         void ExitApp() { exiting = true; Close(); }
+
+        // the window's spot on screen, for next time (minimized, Location is off-screen: use where it would be restored)
+        void RememberPosition()
+        {
+            if (!everShown) return;   // started in the tray and never opened: keep the saved spot
+            var at = WindowState == FormWindowState.Normal ? Location : RestoreBounds.Location;
+            if (at.X <= -30000 || at.Y <= -30000) return;
+            cfg.WindowX = at.X; cfg.WindowY = at.Y; cfg.HasWindowPos = true;
+        }
 
 // app.ico (made by tools\make_icon.ps1) holds every size from 16 to 256 px. It is the exe's own icon
         // (Explorer, Task Manager) and is embedded again so the window and tray pick the right size.
@@ -1509,19 +1533,48 @@ namespace AuraBoxControl
         Panel BuildTextPage()
         {
             var p = NewPage();
+            // the message, font, color and speed are saved, so the playlist's Scrolling Text item keeps them too
             var card = NewCard("Scrolling Message", 0, 0, W, 300);
-            textBox = new TextBox { Location = new Point(12, 38), Width = W - 24, Text = "I ❤️ U!" };
+            textBox = new TextBox { Location = new Point(12, 38), Width = W - 24, Text = cfg.TextMessage };
             card.Controls.Add(textBox);
-            textColor = new ColorWheel { Location = new Point(12, 80), Size = new Size(150, 150), Value = 7 };
+            textColor = new ColorWheel { Location = new Point(12, 80), Size = new Size(150, 150), Value = cfg.TextColor };
             card.Controls.Add(textColor);
             card.Controls.Add(new Label { Text = "Font:", Location = new Point(186, 86), AutoSize = true });
             textFont = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(240, 82), Width = 170 };
             textFont.Items.AddRange(new object[] { "Tahoma", "Arial", "Verdana", "Consolas", "Segoe UI" });
-            textFont.SelectedIndex = 0;
+            textFont.SelectedIndex = Math.Max(0, textFont.Items.IndexOf(cfg.TextFont));
             card.Controls.Add(textFont);
             card.Controls.Add(new Label { Text = "Speed:", Location = new Point(186, 130), AutoSize = true });
-            textSpeed = new TrackBar { Minimum = 1, Maximum = 10, Value = 5, Location = new Point(236, 122), Width = 240, TickStyle = TickStyle.None };
+            textSpeed = new TrackBar { Minimum = 1, Maximum = 10, Value = cfg.TextSpeed, Location = new Point(236, 122), Width = 240, TickStyle = TickStyle.None };
             card.Controls.Add(textSpeed);
+
+            // preview: the message scrolling here at the chosen speed, the way the box will show it
+            var preview = new PixelGrid(10) { Location = new Point(W - 124, 80), ReadOnly = true };
+            card.Controls.Add(preview);
+            card.Controls.Add(new Label { Text = "Preview", Location = new Point(W - 124, 186), AutoSize = true, Tag = "subtle" });
+            int[,] previewStrip = null; int previewOffset = 0; DateTime previewNext = DateTime.MinValue;
+            EventHandler changed = delegate
+            {
+                previewStrip = null;   // redraw from the start
+                cfg.TextMessage = textBox.Text; cfg.TextFont = (string)textFont.SelectedItem;
+                cfg.TextColor = textColor.Value; cfg.TextSpeed = textSpeed.Value;
+            };
+            textBox.TextChanged += changed; textFont.SelectedIndexChanged += changed;
+            textColor.Changing += changed; textColor.Picked += delegate { changed(null, null); SaveSettings(); };
+            textSpeed.ValueChanged += changed;
+            textBox.Leave += delegate { SaveSettings(); }; textFont.SelectionChangeCommitted += delegate { SaveSettings(); };
+            textSpeed.MouseUp += delegate { SaveSettings(); };
+            var previewTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            previewTimer.Tick += delegate
+            {
+                if (!p.Visible || DateTime.Now < previewNext) return;
+                if (previewStrip == null) { previewStrip = TextArt.Strip(textBox.Text, (string)textFont.SelectedItem); previewOffset = 0; }
+                preview.SetAll(TextArt.Window(previewStrip, previewOffset, textColor.Value));
+                previewOffset = (previewOffset + 1) % (previewStrip.GetLength(0) + 11);
+                previewNext = DateTime.Now.AddSeconds(0.45 - textSpeed.Value * 0.035);   // the same step time as the box
+            };
+            previewTimer.Start();
+
             textPlay = Btn("Play", 190, 176, 120, null, true);
             textPlay.Click += delegate
             {
@@ -1530,10 +1583,42 @@ namespace AuraBoxControl
                 TogglePlay(textPlay, delegate { MarqueeLoop(strip, color, DateTime.MaxValue); }, "Text");
             };
             card.Controls.Add(textPlay);
-            card.Controls.Add(Note("Type ❤ or ♥ for a red heart.\r\n" +
-                                   "The text is sent frame by frame from this PC, so keep the app running (it can sit in the tray).", 12, 246));
+            card.Controls.Add(Note("Add emoji from the card below. The message is also the playlist's Scrolling Text item.\r\n" +
+                                   "It is sent frame by frame from this PC, so keep the app running (it can sit in the tray).", 12, 246));
             p.Controls.Add(card);
+
+            // emoji: each button shows the pixel picture the box will draw, and adds it where the cursor is
+            var emojiCard = NewCard("Emoji (drawn on the box as these pixel pictures)", 0, 312, W, 100);
+            var tips = new ToolTip();
+            for (int k = 0; k < TextArt.Emoji.Length; k++)
+            {
+                char ch = TextArt.Emoji[k].Key;
+                var b = Btn("", 12 + k * 54, 36, 48, delegate
+                {
+                    textBox.SelectedText = ch.ToString();
+                    textBox.Focus();
+                });
+                b.Height = 48; b.Image = EmojiImage(ch);
+                tips.SetToolTip(b, TextArt.Emoji[k].Value);
+                emojiCard.Controls.Add(b);
+            }
+            emojiCard.Controls.Add(Note("Click one to add it to the\r\nmessage at the cursor.", 12 + TextArt.Emoji.Length * 54 + 12, 44));
+            p.Controls.Add(emojiCard);
             return p;
+        }
+
+        // an emoji's pixel picture for its button (its 6 rows, off pixels left clear)
+        static Bitmap EmojiImage(char emoji)
+        {
+            var cols = TextArt.PictureColumns(emoji);
+            int cell = Theme.Px(4);
+            var bmp = new Bitmap(cols.Count * cell, 6 * cell);
+            using (var g = Graphics.FromImage(bmp))
+                for (int x = 0; x < cols.Count; x++)
+                    for (int y = 3; y < 9; y++)
+                        if (cols[x][y] > 0)
+                            using (var br = new SolidBrush(Proto.Palette[cols[x][y]])) g.FillRectangle(br, x * cell, (y - 3) * cell, cell - 1, cell - 1);
+            return bmp;
         }
 
         void MarqueeLoop(int[,] strip, int color, DateTime until)
@@ -2247,11 +2332,67 @@ namespace AuraBoxControl
             p.Controls.Add(backup);
 
             var about = NewCard("About", 0, 388, W, 124);
-            about.Controls.Add(new Label { Text = "AuraBox Control — a portable app for the Divoom AuraBox over Bluetooth.", Location = new Point(14, 34), AutoSize = true });
+            about.Controls.Add(new Label { Text = "AuraBox Control " + VersionText(AppVersion) + " — a portable app for the Divoom AuraBox over Bluetooth.",
+                                           Location = new Point(14, 34), AutoSize = true, UseMnemonic = false });
+            // Check for Updates turns into "Download x.y.z" when GitHub has a newer release (hidden until UpdateRepo is set)
+            updateBtn = Btn("Check for Updates", W - 172, 26, 158, delegate
+            {
+                if (updateUrl != null) { try { System.Diagnostics.Process.Start(updateUrl); } catch (Exception) { } }
+                else CheckForUpdates(true);
+            });
+            updateBtn.Visible = UpdateRepo.Length > 0;
+            about.Controls.Add(updateBtn);
             about.Controls.Add(Note("This is an independent app. It is not affiliated with, endorsed by or supported by\r\nDivoom, the maker of the AuraBox.", 14, 56));
             about.Controls.Add(Note("Some features, like live weather and the Divoom cloud gallery, need an internet connection.", 14, 94));
             p.Controls.Add(about);
             return p;
+        }
+
+        // ---------- version and updates ----------
+        // GitHub "owner/repo" whose latest release is compared with this version; empty until the project is published
+        const string UpdateRepo = "";
+        Button updateBtn; string updateUrl;
+
+        static Version AppVersion { get { return typeof(MainForm).Assembly.GetName().Version; } }
+        static string VersionText(Version v) { return v.Major + "." + v.Minor + "." + Math.Max(0, v.Build); }
+
+        void CheckForUpdates(bool asked)
+        {
+            if (asked) status.Text = "Checking for updates...";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string tag = null, page = null, error = null;
+                try
+                {
+                    System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072;   // TLS 1.2
+                    using (var wc = new System.Net.WebClient())
+                    {
+                        wc.Headers[System.Net.HttpRequestHeader.UserAgent] = "AuraBoxControl/" + VersionText(AppVersion);
+                        string json = wc.DownloadString("https://api.github.com/repos/" + UpdateRepo + "/releases/latest");
+                        var t = System.Text.RegularExpressions.Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([0-9]+(?:\\.[0-9]+){0,3})");
+                        var u = System.Text.RegularExpressions.Regex.Match(json, "\"html_url\"\\s*:\\s*\"([^\"]+)\"");   // the first one is the release page
+                        if (t.Success) { tag = t.Groups[1].Value; page = u.Success ? u.Groups[1].Value : "https://github.com/" + UpdateRepo + "/releases"; }
+                    }
+                }
+                catch (Exception e) { error = e.Message; }
+                try
+                {
+                    BeginInvoke((Action)delegate
+                    {
+                        Version latest;
+                        if (tag != null && Version.TryParse(tag.Contains(".") ? tag : tag + ".0", out latest) && latest > AppVersion)
+                        {
+                            updateUrl = page;
+                            updateBtn.Text = "Download " + VersionText(latest); updateBtn.Tag = "primary"; Theme.Apply(updateBtn);
+                            status.Text = "AuraBox Control " + VersionText(latest) + " is available: see Settings, About";
+                        }
+                        else if (asked)
+                            status.Text = error != null ? "Couldn't check for updates: " + error
+                                                        : "You have the latest version (" + VersionText(AppVersion) + ")";
+                    });
+                }
+                catch (InvalidOperationException) { }   // window closed meanwhile
+            });
         }
 
         // a row of radio buttons that acts as its own group, so several rows can share one card

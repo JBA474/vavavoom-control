@@ -650,8 +650,9 @@ namespace AuraBoxControl
             }
 
             var frame = (int[])board.Clone();
+            // a completed line flashes yellow; the whole-board flash before starting over stays white
             foreach (int y in fullRows)
-                for (int x = 0; x < 10; x++) frame[y * 10 + x] = flash % 2 == 0 ? 7 : (wiping ? board[y * 10 + x] : 0);
+                for (int x = 0; x < 10; x++) frame[y * 10 + x] = flash % 2 == 0 ? (wiping ? 7 : 3) : (wiping ? board[y * 10 + x] : 0);
             if (piece != null)
                 foreach (var p in piece)
                     if (py + p.Y >= 0) frame[(py + p.Y) * 10 + px + p.X] = color;

@@ -60,7 +60,7 @@ This produces `AuraBoxControl.exe` in this folder. It's portable: settings (`Aur
 
 | Folder | What's in it |
 |---|---|
-| `src/` | The C# source, the app icon, the design lists built into the exe, and the license |
+| `src/` | The C# source, the app icon, and the design lists built into the exe |
 | `tools/` | `build.cmd`, and the scripts that make the icon and the design lists |
 | `docs/` | Screenshots for this README |
 | `settings/` | Your settings and favorites (made by the app, not committed) |
@@ -113,4 +113,4 @@ The cloud gallery uses Divoom's public gallery server, which may change or go aw
 
 ## License
 
-[MIT](src/LICENSE)
+[MIT](LICENSE)

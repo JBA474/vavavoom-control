@@ -379,9 +379,39 @@ namespace AuraBoxControl
     {
         public const int Ink = -1;   // strip cell drawn in the chosen text color
 
-        // ❤ or ♥ in the text becomes this red pixel heart (an 8 px font can't draw an emoji legibly)
-        static readonly string[] Heart = { ".XX.XX.", "XXXXXXX", "XXXXXXX", ".XXXXX.", "..XXX..", "...X..." };
-        const int HeartTop = 3, HeartColor = 1;   // rows 3-8: level with the capitals of the default Tahoma
+        // Emoji in the text become these pixel pictures (an 8 px font can't draw them legibly). Letters are palette
+        // colors (R red, G green, Y yellow, B blue, M magenta, C cyan, W white), "." is off. At most 6 rows, centered
+        // on rows 3-8: level with the capitals of the default Tahoma. Emoji lists them in the order the Text page shows.
+        public static readonly KeyValuePair<char, string>[] Emoji = {
+            new KeyValuePair<char, string>('❤', "Heart"), new KeyValuePair<char, string>('★', "Star"),
+            new KeyValuePair<char, string>('☺', "Smiley"), new KeyValuePair<char, string>('☀', "Sun"),
+            new KeyValuePair<char, string>('☁', "Cloud"), new KeyValuePair<char, string>('⚡', "Lightning"),
+            new KeyValuePair<char, string>('♪', "Music Note"), new KeyValuePair<char, string>('✓', "Check Mark") };
+        static readonly Dictionary<char, string[]> Pictures = new Dictionary<char, string[]> {
+            { '❤', new[] { ".RR.RR.", "RRRRRRR", "RRRRRRR", ".RRRRR.", "..RRR..", "...R..." } },
+            { '★', new[] { "...Y...", "..YYY..", "YYYYYYY", ".YYYYY.", ".YY.YY.", "YY...YY" } },
+            { '☺', new[] { ".YYYYY.", "YY.Y.YY", "YYYYYYY", "Y.YYY.Y", "YY...YY", ".YYYYY." } },
+            { '☀', new[] { ".Y.Y.Y.", "..YYY..", "YYYYYYY", "..YYY..", ".Y.Y.Y." } },
+            { '☁', new[] { "..WW....", ".WWWWWW.", "WWWWWWWW", "WWWWWWWW" } },
+            { '⚡', new[] { "..YY", ".YY.", "YYYY", ".YY.", "YY..", "Y..." } },
+            { '♪', new[] { "...CC.", "...C.C", "...C..", ".CCC..", "CCCC..", ".CC..." } },
+            { '✓', new[] { "......G", ".....GG", "G...GG.", "GG.GG..", ".GGG...", "..G...." } } };
+        static char Canon(char ch) { return ch == '♥' ? '❤' : ch; }   // ♥ draws as ❤
+
+        // a picture's cells as a 10-row column list (for the strip, and for the Text page's buttons)
+        public static List<int[]> PictureColumns(char emoji)
+        {
+            string[] rows = Pictures[Canon(emoji)];
+            int top = 3 + (6 - rows.Length) / 2;
+            var cols = new List<int[]>();
+            for (int x = 0; x < rows[0].Length; x++)
+            {
+                var col = new int[10];
+                for (int y = 0; y < rows.Length; y++) col[top + y] = "RGYBMCW".IndexOf(rows[y][x]) + 1;   // "." -> 0, off
+                cols.Add(col);
+            }
+            return cols;
+        }
 
         // the text as columns of 10 cells: 0 = off, Ink = text color, anything else = that palette color
         public static int[,] Strip(string text, string fontName)
@@ -392,17 +422,12 @@ namespace AuraBoxControl
             for (int i = 0; i < text.Length; i++)
             {
                 char ch = text[i];
-                if (ch != '❤' && ch != '♥') { run.Append(ch); continue; }
+                if (!Pictures.ContainsKey(Canon(ch))) { run.Append(ch); continue; }
                 AddText(cols, run.ToString(), fontName); run.Length = 0;
                 cols.Add(new int[10]);
-                for (int x = 0; x < Heart[0].Length; x++)
-                {
-                    var col = new int[10];
-                    for (int y = 0; y < Heart.Length; y++) if (Heart[y][x] == 'X') col[HeartTop + y] = HeartColor;
-                    cols.Add(col);
-                }
+                cols.AddRange(PictureColumns(ch));
                 cols.Add(new int[10]);
-                if (i + 1 < text.Length && text[i + 1] == '️') i++;   // the emoji-style variant selector after ❤
+                if (i + 1 < text.Length && text[i + 1] == '️') i++;   // the emoji-style variant selector (as in ❤️)
             }
             AddText(cols, run.ToString(), fontName);
             cols.Add(new int[10]); cols.Add(new int[10]);
@@ -725,6 +750,10 @@ namespace AuraBoxControl
         public int AlarmHour = 7, AlarmMinute = 0, AlarmScene = 0, SleepMinutes = 30, SleepScene = 0;
         public bool AlarmOn = false, SleepOn = false;
         public bool ShowNotifications = true;   // the app's own Windows notifications (startup in the tray, closing to the tray)
+        public bool HasWindowPos = false; public int WindowX, WindowY;   // where the window was when it last closed (screen pixels)
+        // the Text page's scrolling message (also the playlist's Scrolling Text item)
+        public string TextMessage = "I ❤️ U!", TextFont = "Tahoma";
+        public int TextColor = 7, TextSpeed = 5;
 
         public int SpeedOf(string id)
         {
@@ -803,6 +832,15 @@ namespace AuraBoxControl
                 else if (k == "only_on_items") s.OnlyOnItems = v != "0";
                 else if (k == "audio_aux") s.AudioAux = v != "0";
                 else if (k == "show_notifications") s.ShowNotifications = v != "0";
+                else if (k == "window")
+                {
+                    string[] xy = v.Split(','); int x, y;
+                    if (xy.Length == 2 && int.TryParse(xy[0], out x) && int.TryParse(xy[1], out y)) { s.WindowX = x; s.WindowY = y; s.HasWindowPos = true; }
+                }
+                else if (k == "text_message") s.TextMessage = line.Substring(eq + 1);   // untrimmed: spaces are part of the message
+                else if (k == "text_font") s.TextFont = v;
+                else if (k == "text_color" && int.TryParse(v, out n)) s.TextColor = Math.Max(1, Math.Min(7, n));
+                else if (k == "text_speed" && int.TryParse(v, out n)) s.TextSpeed = Math.Max(1, Math.Min(10, n));
                 else if (k == "alarm" || k == "sleep")   // alarm=hour:minute:scene:on, sleep=minutes:scene:on
                 {
                     string[] f = v.Split(':'); int[] nums = new int[f.Length];
@@ -857,7 +895,9 @@ namespace AuraBoxControl
                           "\r\nweather_flip=" + WeatherFlip + "\r\nanimated_icons=" + (AnimatedIcons ? 1 : 0) + "\r\nanim_delay=" + AnimDelay +
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
-                          "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
+                          "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
+                          "\r\ntext_message=" + TextMessage.Replace("\r", " ").Replace("\n", " ") + "\r\ntext_font=" + TextFont +
+                          "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
                           "\r\nsleep=" + SleepMinutes + ":" + SleepScene + ":" + (SleepOn ? 1 : 0) +
                           "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\n";
