@@ -34,9 +34,11 @@ that keeps going from the system tray.
   - Reconnects to the box automatically.
   - Settings backup and restore.
 
-| AuraBox page | Settings |
+| Live Animations | AuraBox page |
 |---|---|
-| ![AuraBox page](docs/aurabox.png) | ![Settings page](docs/settings.png) |
+| ![Live Animations page](docs/live.png) | ![AuraBox page](docs/aurabox.png) |
+
+![Settings page](docs/settings.png)
 
 ## Requirements
 

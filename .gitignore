@@ -15,3 +15,6 @@ prepare.db
 *.xapk
 
 __pycache__/
+
+# release files (attached to GitHub releases, not committed)
+dist/
