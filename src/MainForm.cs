@@ -153,7 +153,7 @@ namespace AuraBoxControl
                 {
                     e.Cancel = true;
                     Hide();
-                    if (!toldAboutTray)
+                    if (!toldAboutTray && cfg.ShowNotifications)
                     {
                         toldAboutTray = true;
                         tray.ShowBalloonTip(5000, "AuraBox Control is still running", "It keeps the playlist going from the system tray. " +
@@ -193,7 +193,7 @@ namespace AuraBoxControl
                 BeginInvoke((Action)Startup);
                 // a hidden start is easy to miss (Windows tucks new tray icons under ^), so say it's running
                 // a tray notification can't hold a link, but the whole notification is clickable
-                tray.ShowBalloonTip(6000, "AuraBox Control is running", "Click here to open AuraBox Control. Later, double-click the AuraBox icon in the system tray.",
+                if (cfg.ShowNotifications) tray.ShowBalloonTip(6000, "AuraBox Control is running", "Click here to open AuraBox Control. Later, double-click the AuraBox icon in the system tray.",
                                     ToolTipIcon.Info);
             }
             base.SetVisibleCore(value);
@@ -2212,6 +2212,10 @@ namespace AuraBoxControl
             trayBox.CheckedChanged += delegate { cfg.MinimizeToTray = trayBox.Checked; SaveSettings(); };
             win.Controls.Add(trayBox);
             win.Controls.Add(new Label { Text = "When Windows starts:", Location = new Point(14, 68), AutoSize = true });
+            // off: no Windows notifications from the app (the startup one and the "still running" one after X)
+            var notifyBox = new CheckBox { Text = "Show notifications at startup", Location = new Point(330, 66), AutoSize = true, Checked = cfg.ShowNotifications };
+            notifyBox.CheckedChanged += delegate { cfg.ShowNotifications = notifyBox.Checked; SaveSettings(); };
+            win.Controls.Add(notifyBox);
             string run = ReadRunValue();
             int startChoice = run.Length == 0 ? 0 : run.Contains("--tray") ? 2 : 1;
             string[] starts = { "Don't start AuraBox Control", "Open AuraBox Control",

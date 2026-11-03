@@ -724,6 +724,7 @@ namespace AuraBoxControl
         // the alarm and sleep timer as last sent (the box can't be asked for them)
         public int AlarmHour = 7, AlarmMinute = 0, AlarmScene = 0, SleepMinutes = 30, SleepScene = 0;
         public bool AlarmOn = false, SleepOn = false;
+        public bool ShowNotifications = true;   // the app's own Windows notifications (startup in the tray, closing to the tray)
 
         public int SpeedOf(string id)
         {
@@ -786,6 +787,7 @@ namespace AuraBoxControl
                 else if (k == "bounce_temp") s.BounceTemp = v != "0";
                 else if (k == "only_on_items") s.OnlyOnItems = v != "0";
                 else if (k == "audio_aux") s.AudioAux = v != "0";
+                else if (k == "show_notifications") s.ShowNotifications = v != "0";
                 else if (k == "alarm" || k == "sleep")   // alarm=hour:minute:scene:on, sleep=minutes:scene:on
                 {
                     string[] f = v.Split(':'); int[] nums = new int[f.Length];
@@ -840,7 +842,7 @@ namespace AuraBoxControl
                           "\r\nweather_flip=" + WeatherFlip + "\r\nanimated_icons=" + (AnimatedIcons ? 1 : 0) + "\r\nanim_delay=" + AnimDelay +
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
-                          "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
+                          "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
                           "\r\nsleep=" + SleepMinutes + ":" + SleepScene + ":" + (SleepOn ? 1 : 0) +
                           "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\n";
