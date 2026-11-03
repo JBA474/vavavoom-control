@@ -137,6 +137,7 @@ namespace AuraBoxControl
             };
             tray.ContextMenuStrip = menu;
             tray.DoubleClick += delegate { RestoreFromTray(); };
+            tray.BalloonTipClicked += delegate { RestoreFromTray(); };   // "Click here to open" on the startup notification
             Resize += delegate { if (WindowState == FormWindowState.Minimized && cfg.MinimizeToTray) Hide(); };
 
             Theme.Prepare(this);
@@ -177,7 +178,9 @@ namespace AuraBoxControl
                 value = false;
                 BeginInvoke((Action)Startup);
                 // a hidden start is easy to miss (Windows tucks new tray icons under ^), so say it's running
-                tray.ShowBalloonTip(6000, "AuraBox Control is running", "It's in the system tray. Double-click the icon to open it.", ToolTipIcon.Info);
+                // a tray notification can't hold a link, but the whole notification is clickable
+                tray.ShowBalloonTip(6000, "AuraBox Control is running", "Click here to open AuraBox Control. Later, double-click the AuraBox icon in the system tray.",
+                                    ToolTipIcon.Info);
             }
             base.SetVisibleCore(value);
         }
@@ -666,17 +669,27 @@ namespace AuraBoxControl
             var card = NewCard("On the AuraBox", 0, 0, W, 252);
             var preview = new PixelGrid(18) { Location = new Point(14, 40), ReadOnly = true };
             card.Controls.Add(preview);
-            var what = new Label { Location = new Point(222, 40), Size = new Size(W - 236, 36), Font = Theme.Semibold(15f), UseMnemonic = false, AutoEllipsis = true };
-            var detail = new Label { Location = new Point(224, 80), Size = new Size(W - 236, 44), Tag = "subtle", UseMnemonic = false };
+            var what = new Label { Location = new Point(222, 36), Size = new Size(W - 236, 34), Font = Theme.Semibold(15f), UseMnemonic = false, AutoEllipsis = true };
+            var detail = new Label { Location = new Point(224, 72), Size = new Size(W - 236, 22), Tag = "subtle", UseMnemonic = false, AutoEllipsis = true };
             card.Controls.Add(what); card.Controls.Add(detail);
-            var playBtn = Btn("Run Playlist", 222, 140, 150, delegate { rotateBox.Checked = !rotateBox.Checked; }, true);
+            var playBtn = Btn("Run Playlist", 222, 100, 150, delegate { rotateBox.Checked = !rotateBox.Checked; }, true);
             card.Controls.Add(playBtn);
-            card.Controls.Add(Btn("Skip to Next Item  ›", 380, 140, 170, delegate
+            card.Controls.Add(Btn("Skip to Next Item  ›", 380, 100, 170, delegate
             {
                 if (!rotateBox.Checked) { status.Text = "Start the playlist first"; return; }
                 skipItem = true; status.Text = "Skipping to the next item...";
             }));
-            card.Controls.Add(Note("Pausing here turns the playlist off until you run it again.", 224, 182));
+            card.Controls.Add(Note("Pausing here turns the playlist off until you run it again.", 224, 136));
+
+            // up next: the following three playlist items, under the controls
+            card.Controls.Add(new Label { Text = "Up next", Location = new Point(224, 168), AutoSize = true, Font = Theme.Semibold(9f) });
+            var nextName = new Label[3]; var nextTime = new Label[3];
+            for (int k = 0; k < 3; k++)
+            {
+                nextName[k] = new Label { Location = new Point(224 + k * 156, 190), Size = new Size(150, 22), UseMnemonic = false, AutoEllipsis = true };
+                nextTime[k] = new Label { Location = new Point(224 + k * 156, 212), Size = new Size(150, 20), Tag = "subtle", UseMnemonic = false };
+                card.Controls.Add(nextName[k]); card.Controls.Add(nextTime[k]);
+            }
             p.Controls.Add(card);
 
             // eight quick picks; right-click one to choose what it shows (saved)
@@ -703,16 +716,6 @@ namespace AuraBoxControl
             }
             quick.Controls.Add(Note("Right-click a button to choose what it shows.", 14, 122));
             p.Controls.Add(quick);
-            // the next three playlist items, in order
-            var upNext = NewCard("Up Next", 0, 430, W, 88);
-            var nextName = new Label[3]; var nextTime = new Label[3];
-            for (int k = 0; k < 3; k++)
-            {
-                nextName[k] = new Label { Location = new Point(14 + k * 228, 38), Size = new Size(220, 22), UseMnemonic = false, AutoEllipsis = true };
-                nextTime[k] = new Label { Location = new Point(14 + k * 228, 60), Size = new Size(220, 20), Tag = "subtle", UseMnemonic = false };
-                upNext.Controls.Add(nextName[k]); upNext.Controls.Add(nextTime[k]);
-            }
-            p.Controls.Add(upNext);
 
             var tick = new System.Windows.Forms.Timer { Interval = 200 };
             tick.Tick += delegate
