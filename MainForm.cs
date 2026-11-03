@@ -80,14 +80,14 @@ namespace AuraBoxControl
             startHidden = hidden || settings.StartInTray;
             clock24 = cfg.Clock24; LavaClock.FixedTheme = cfg.LavaTheme; LavaClock.Puddle = cfg.LavaPuddle;
             cfg.ThermoFahrenheit = cfg.Fahrenheit;   // one unit setting now covers the weather and the box's own thermometer
-            cfg.Brightness = HighBrightness;         // every launch starts at High
+            cfg.Brightness = MaxBrightness;          // every launch starts at full brightness
             Text = "AuraBox Control";
             Font = new Font(Theme.UiFont, 9f);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             ClientSize = new Size(212 + W + 16, 52 + H + 30);
             StartPosition = FormStartPosition.CenterScreen;
-            Icon = MakeIcon();
+            Icon = AppIcon(Size.Empty);
 
             BuildChrome();
             // sidebar groups; the page order here is the sidebar order
@@ -109,7 +109,7 @@ namespace AuraBoxControl
             AddPage("\uE713", "Settings", BuildSettingsPage());
             ShowPage(0);
 
-            tray = new NotifyIcon { Icon = Icon, Text = "AuraBox Control", Visible = true };
+            tray = new NotifyIcon { Icon = AppIcon(SystemInformation.SmallIconSize), Text = "AuraBox Control", Visible = true };
             var menu = new ContextMenuStrip { ShowImageMargin = false, Renderer = new MenuRenderer() };
             menu.Items.Add("Show", null, delegate { RestoreFromTray(); });
             menu.Items.Add(new ToolStripSeparator());
@@ -209,17 +209,16 @@ namespace AuraBoxControl
 
         void RestoreFromTray() { Show(); WindowState = FormWindowState.Normal; Activate(); }
 
-        static Icon MakeIcon()
+// app.ico (made by tools\make_icon.ps1) holds every size from 16 to 256 px. It is the exe's own icon
+        // (Explorer, Task Manager) and is embedded again so the window and tray pick the right size.
+        // Size.Empty keeps all sizes, so Windows picks the best one for the title bar and taskbar.
+        static Icon AppIcon(Size size)
         {
-            var bmp = new Bitmap(32, 32);
-            using (var g = Graphics.FromImage(bmp))
+            using (var s = typeof(MainForm).Assembly.GetManifestResourceStream("app.ico"))
             {
-                g.Clear(Color.FromArgb(30, 30, 30));
-                for (int k = 0; k < 16; k++)
-                    using (var b = new SolidBrush(Proto.Palette[1 + (k * 3 + k / 4) % 7]))
-                        g.FillRectangle(b, 2 + (k % 4) * 7, 2 + (k / 4) * 7, 6, 6);
+                if (s == null) return SystemIcons.Application;
+                return size.IsEmpty ? new Icon(s) : new Icon(s, size);
             }
-            return Icon.FromHandle(bmp.GetHicon());
         }
 
         volatile bool closing;
@@ -728,7 +727,7 @@ namespace AuraBoxControl
             return p;
         }
 
-        const int HighBrightness = 210;
+        const int MaxBrightness = 255;
 
         void SendBrightness()
         {

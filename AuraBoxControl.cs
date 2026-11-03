@@ -653,7 +653,7 @@ namespace AuraBoxControl
     // Settings live next to the exe (portable); fall back to %APPDATA% if that folder is read-only.
     class Settings
     {
-        public string Mac = ""; public int Channel = 0; public int Brightness = 210; public bool SyncOnConnect = true;
+        public string Mac = ""; public int Channel = 0; public int Brightness = 255; public bool SyncOnConnect = true;
         public bool Rotate = false; public int ClockMinutes = 2; public int WeatherMinutes = 1; public bool Fahrenheit = true;
         public string Place = "New York, New York"; public double Lat = 40.71427, Lon = -74.00597;
         public bool MinimizeToTray = true;
