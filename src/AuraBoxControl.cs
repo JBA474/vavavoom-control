@@ -755,9 +755,17 @@ namespace AuraBoxControl
         public string TextMessage = "I ❤️ U!", TextFont = "Tahoma";
         public int TextColor = 7, TextSpeed = 5;
 
+        // animations that start faster than DefaultSpeed until a speed is picked for them on the Animations page
+        static readonly Dictionary<string, int> StartSpeeds = new Dictionary<string, int> { { "blocks", 8 } };
+
         public int SpeedOf(string id)
         {
-            lock (AnimSpeeds) { int v; return AnimSpeeds.TryGetValue(id, out v) ? v : DefaultSpeed; }
+            lock (AnimSpeeds)
+            {
+                int v;
+                if (AnimSpeeds.TryGetValue(id, out v)) return v;
+                return StartSpeeds.TryGetValue(id, out v) ? v : DefaultSpeed;
+            }
         }
 
         public void SetSpeed(string id, int v) { lock (AnimSpeeds) AnimSpeeds[id] = Math.Max(1, Math.Min(10, v)); }
