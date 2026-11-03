@@ -1213,7 +1213,23 @@ namespace AuraBoxControl
         public static List<Entry> List(int category, bool animations, int page)
         {
             int start = page * PageSize + 1;
-            string body = "{\"Category\":" + category + ",\"Command\":\"GetCategoryFileList\",\"DeviceId\":0,\"EndNum\":" + (start + PageSize - 1) +
+            return Fetch(category, animations, start, start + PageSize - 1);
+        }
+
+        // How many designs a list has. The server's FileListNum is the whole library (the same for every list),
+        // so find the last position that still returns a design: double until one is empty, then halve the gap.
+        public static int Count(int category, bool animations)
+        {
+            Func<int, bool> has = n => Fetch(category, animations, n, n).Count > 0;
+            int lo = 0, hi = 1;
+            while (hi < 1000000 && has(hi)) { lo = hi; hi *= 2; }
+            while (hi - lo > 1) { int mid = lo + (hi - lo) / 2; if (has(mid)) lo = mid; else hi = mid; }
+            return lo;
+        }
+
+        static List<Entry> Fetch(int category, bool animations, int start, int end)
+        {
+            string body = "{\"Category\":" + category + ",\"Command\":\"GetCategoryFileList\",\"DeviceId\":0,\"EndNum\":" + end +
                           ",\"FileSize\":0,\"FileType\":" + (animations ? 1 : 5) + ",\"StartNum\":" + start + ",\"Token\":0,\"UserId\":0}";
             string json;
             using (var wc = Client())

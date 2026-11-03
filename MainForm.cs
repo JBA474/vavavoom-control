@@ -366,7 +366,7 @@ namespace AuraBoxControl
                 using (var b = new SolidBrush(sel ? Theme.AccentFill : lb.BackColor)) e.Graphics.FillRectangle(b, e.Bounds);
                 var r = new Rectangle(e.Bounds.X + Theme.Px(4), e.Bounds.Y, e.Bounds.Width - Theme.Px(4), e.Bounds.Height);
                 TextRenderer.DrawText(e.Graphics, lb.Items[e.Index].ToString(), lb.Font, r, sel ? Theme.AccentText : lb.ForeColor,
-                                      TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                                      TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             };
         }
 
@@ -391,7 +391,8 @@ namespace AuraBoxControl
                 var text = new Rectangle(e.Bounds.X + 2, label.Y, e.Bounds.Width - 4, Math.Max(label.Height, e.Bounds.Bottom - label.Y));
                 if (sel) using (var b = new SolidBrush(Theme.AccentFill)) e.Graphics.FillRectangle(b, text);
                 TextRenderer.DrawText(e.Graphics, e.Item.Text, lv.Font, text, sel ? Theme.AccentText : lv.ForeColor,
-                                      TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+                                      TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis |
+                                      TextFormatFlags.NoPrefix);   // "b&w squares" is a name, not a keyboard shortcut
             };
         }
 
@@ -1046,8 +1047,10 @@ namespace AuraBoxControl
             foreach (var c in CloudSources) catBox.Items.Add(c);
             var favorites = GalleryItem.LoadFavorites();
             p.Controls.Add(catBox);
-            var prev = Btn("‹ Previous", W - 260, 0, 100, null); var next = Btn("Next ›", W - 100, 0, 100, null);
-            var pageLabel = new Label { Location = new Point(W - 154, 7), Size = new Size(48, 20), TextAlign = ContentAlignment.TopCenter };
+            var prev = Btn("‹ Previous", W - 300, 0, 100, null); var next = Btn("Next ›", W - 100, 0, 100, null);
+            var pageLabel = new Label { Location = new Point(W - 196, 7), Size = new Size(92, 20), TextAlign = ContentAlignment.TopCenter, UseMnemonic = false };
+            var pageCounts = new Dictionary<int, int>();   // cloud source -> number of pages, counted once per session
+            var counting = new HashSet<int>();
             p.Controls.Add(prev); p.Controls.Add(next); p.Controls.Add(pageLabel);
 
             int thumb = Theme.Px(50);
@@ -1103,7 +1106,7 @@ namespace AuraBoxControl
                 if (fav)
                 {
                     view.BeginUpdate();
-                    foreach (var it in SortedUnique(favorites)) addItem(it);
+                    foreach (var it in SortedUnique(favorites, false)) addItem(it);
                     view.EndUpdate();
                     status.Text = favorites.Count == 0 ? "No favorites yet: select a design and press Add to Favorites" : favorites.Count + " favorites";
                     return;
@@ -1116,8 +1119,32 @@ namespace AuraBoxControl
                     return;
                 }
                 int src = sel - cats.Count - 1, page = cloudPage;
-                pageLabel.Text = (page + 1).ToString();
+                // "3 of 51"; the total is counted in the background the first time a source is opened
+                int pages;
+                bool known = pageCounts.TryGetValue(src, out pages);
+                pageLabel.Text = (page + 1) + " of " + (known ? pages.ToString() : "…");
                 prev.Enabled = page > 0;
+                next.Enabled = !known || page + 1 < pages;
+                if (!known && counting.Add(src))
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        int total = -1;
+                        try { total = DivoomCloud.Count(CloudCategory[src], src < 3); } catch (Exception) { }
+                        try
+                        {
+                            BeginInvoke((Action)delegate
+                            {
+                                counting.Remove(src);
+                                if (total < 0) return;   // offline: keep showing just the page number
+                                int n = Math.Max(1, (total + DivoomCloud.PageSize - 1) / DivoomCloud.PageSize);
+                                pageCounts[src] = n;
+                                if (catBox.SelectedIndex - cats.Count - 1 != src) return;   // moved on to another source
+                                pageLabel.Text = (cloudPage + 1) + " of " + n;
+                                next.Enabled = cloudPage + 1 < n;
+                            });
+                        }
+                        catch (InvalidOperationException) { }   // window closed meanwhile
+                    });
                 string key = src + ":" + page;
                 List<GalleryItem> cached;
                 if (pageCache.TryGetValue(key, out cached))
@@ -1234,13 +1261,19 @@ namespace AuraBoxControl
 
         // Gallery lists run A to Z by name, and designs that share a name (ignoring case) show only once.
         // Name keys get a prefix so they never collide with look signatures in the shared "seen" set.
-        static string NameKey(string name) { string n = (name ?? "").Trim().ToLowerInvariant(); return n.Length == 0 ? "" : "name:" + n; }
+        // runs of spaces (including non-breaking ones) count as one, so "scattered  cloud" matches "scattered cloud"
+        static string NameKey(string name)
+        {
+            string n = System.Text.RegularExpressions.Regex.Replace(name ?? "", @"\s+", " ").Trim().ToLowerInvariant();
+            return n.Length == 0 ? "" : "name:" + n;
+        }
 
-        static List<GalleryItem> SortedUnique(IEnumerable<GalleryItem> list)
+        // unique: false keeps every design (My Favorites may hold several with one name)
+        static List<GalleryItem> SortedUnique(IEnumerable<GalleryItem> list, bool unique = true)
         {
             var names = new HashSet<string>();
             var result = new List<GalleryItem>();
-            foreach (var it in list) { string k = NameKey(it.Name); if (k.Length == 0 || names.Add(k)) result.Add(it); }
+            foreach (var it in list) { string k = NameKey(it.Name); if (!unique || k.Length == 0 || names.Add(k)) result.Add(it); }
             result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
             return result;
         }
