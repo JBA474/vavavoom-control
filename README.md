@@ -52,7 +52,7 @@ that keeps going from the system tray.
 No SDK or Visual Studio is needed. The C# compiler is part of Windows:
 
 ```cmd
-build.cmd
+tools\build.cmd
 ```
 
 This produces `AuraBoxControl.exe` in this folder. It's portable: settings (`AuraBoxControl.ini`) and favorites
@@ -61,7 +61,7 @@ This produces `AuraBoxControl.exe` in this folder. It's portable: settings (`Aur
 | Folder | What's in it |
 |---|---|
 | `src/` | The C# source, the app icon, and the design lists built into the exe |
-| `tools/` | Scripts that make the icon and the design lists |
+| `tools/` | `build.cmd`, and the scripts that make the icon and the design lists |
 | `docs/` | Screenshots for this README |
 | `dist/` | Release downloads (not committed) |
 
@@ -73,7 +73,7 @@ Divoom's artwork, so they aren't included in this repository. To add them:
 1. Get the AuraBox Android app's APK (`com.cheerchip.aurabox1`) and open it as a zip file.
 2. Extract `assets/prepare.db`.
 3. Run `python tools/export_gallery.py prepare.db src/gallery.txt`.
-4. Run `build.cmd`. It embeds `src/gallery.txt` whenever the file is there.
+4. Run `tools\build.cmd`. It embeds `src/gallery.txt` whenever the file is there.
 
 ## Tools
 

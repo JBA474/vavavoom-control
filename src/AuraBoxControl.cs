@@ -1,5 +1,5 @@
 // AuraBox Control - portable Windows app for the Divoom AuraBox (Bluetooth SPP).
-// Build (no SDK needed): build.cmd  ->  AuraBoxControl.exe
+// Build (no SDK needed): tools\build.cmd  ->  AuraBoxControl.exe (in the project folder)
 //
 // Protocol (reverse-engineered from the official Android app, com.cheerchip.aurabox1):
 //   frame  = 01 | escaped(len_lo len_hi cmd data... sum_lo sum_hi) | 02

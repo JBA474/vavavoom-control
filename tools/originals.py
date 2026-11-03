@@ -1,7 +1,7 @@
 """Original 'girder runner' animations for the AuraBox (our own character, not from any game).
 
 Run:  python -X utf8 originals.py          -> print the frames as text
-      python -X utf8 originals.py --line > extras.txt   (then build.cmd embeds extras.txt)
+      python -X utf8 originals.py --line > ..\src\extras.txt   (then tools\build.cmd embeds it)
 """
 import sys
 
