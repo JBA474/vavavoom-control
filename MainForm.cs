@@ -19,7 +19,8 @@ namespace AuraBoxControl
         readonly object playlistGate = new object();
         ComboBox deviceBox; Button connectBtn; CheckBox syncBox; Label status, connDot, pageTitle;
         TrackBar bright; System.Windows.Forms.Timer brightTimer;
-        PixelGrid grid; CheckBox liveBox; ListBox frameList; NumericUpDown delayBox;
+        PixelGrid grid; CheckBox liveBox; NumericUpDown delayBox;
+        readonly PixelGrid[] frameSlots = new PixelGrid[8]; readonly Label[] frameRims = new Label[8]; int selFrame = -1;   // animation frame strip
         ColorWheel penWheel; Label penSwatch;
         NotifyIcon tray;
         Panel host, side;
@@ -81,6 +82,8 @@ namespace AuraBoxControl
             clock24 = cfg.Clock24; LavaClock.FixedTheme = cfg.LavaTheme; LavaClock.Puddle = cfg.LavaPuddle;
             cfg.ThermoFahrenheit = cfg.Fahrenheit;   // one unit setting now covers the weather and the box's own thermometer
             cfg.Brightness = MaxBrightness;          // every launch starts at full brightness
+            for (int k = 0; k < Settings.ShowNowSlots; k++)   // a pick that no longer exists goes back to its default
+                if (!ShowNowChoices().Exists(c => c.Key == cfg.ShowNow[k])) cfg.ShowNow[k] = Settings.DefaultShowNow[k];
             Text = "AuraBox Control";
             Font = new Font(Theme.UiFont, 9f);
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -94,12 +97,10 @@ namespace AuraBoxControl
             AddGroup("Display");
             AddPage("\uE768", "Now", BuildNowPage());
             AddPage("\uE7F5", "Original Modes", BuildBoxPage());
-            AddPage("\uE823", "Clock", BuildClockPage());
-            AddPage("\uE753", "Weather", BuildWeatherPage());
+            AddPage("\uE823", "Clock & Weather", BuildClockWeatherPage());
             AddPage("\uE8B2", "Animations", BuildLivePage());
             AddGroup("Create");
-            AddPage("\uE70F", "Draw", BuildDrawPage());
-            AddPage("\uE714", "Build Animation", BuildAnimPage());
+            AddPage("\uE70F", "Draw & Animate", BuildDrawPage());
             AddPage("\uE8D2", "Text", BuildTextPage());
             AddPage("\uE8B9", "Gallery", BuildGalleryPage());
             AddGroup("Schedule");
@@ -204,6 +205,7 @@ namespace AuraBoxControl
         {
             Theme.Load(cfg.ThemeMode);
             Theme.Apply(this);
+            RefreshFrames();   // the strip's selection rim uses the accent color
             Refresh();
         }
 
@@ -352,7 +354,49 @@ namespace AuraBoxControl
 
         static Card NewCard(string title, int x, int y, int w, int h) { return new Card { Text = title, Location = new Point(x, y), Size = new Size(w, h) }; }
 
-        static Label Note(string text, int x, int y) { return new Label { Text = text, Location = new Point(x, y), AutoSize = true, Tag = "subtle" }; }
+        // lists highlight the selection in the theme's accent color instead of Windows blue
+        static void AccentList(ListBox lb)
+        {
+            lb.DrawMode = DrawMode.OwnerDrawFixed;
+            lb.HandleCreated += delegate { lb.ItemHeight = lb.Font.Height + Theme.Px(1); };
+            lb.DrawItem += delegate (object s, DrawItemEventArgs e)
+            {
+                if (e.Index < 0) return;
+                bool sel = (e.State & DrawItemState.Selected) != 0;
+                using (var b = new SolidBrush(sel ? Theme.AccentFill : lb.BackColor)) e.Graphics.FillRectangle(b, e.Bounds);
+                var r = new Rectangle(e.Bounds.X + Theme.Px(4), e.Bounds.Y, e.Bounds.Width - Theme.Px(4), e.Bounds.Height);
+                TextRenderer.DrawText(e.Graphics, lb.Items[e.Index].ToString(), lb.Font, r, sel ? Theme.AccentText : lb.ForeColor,
+                                      TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            };
+        }
+
+        static void AccentIcons(ListView lv)
+        {
+            lv.OwnerDraw = true;
+            lv.DrawItem += delegate (object s, DrawListViewItemEventArgs e)
+            {
+                bool sel = e.Item.Selected;
+                var icon = e.Item.GetBounds(ItemBoundsPortion.Icon);
+                var label = e.Item.GetBounds(ItemBoundsPortion.Label);
+                using (var b = new SolidBrush(lv.BackColor)) e.Graphics.FillRectangle(b, e.Bounds);
+                if (sel) using (var b = new SolidBrush(Theme.AccentFill)) e.Graphics.FillRectangle(b, Rectangle.Union(icon, label));
+                var img = lv.LargeImageList;
+                if (img != null && e.Item.ImageIndex >= 0 && e.Item.ImageIndex < img.Images.Count)
+                {
+                    var size = img.ImageSize;
+                    e.Graphics.DrawImage(img.Images[e.Item.ImageIndex], icon.X + (icon.Width - size.Width) / 2, icon.Y + (icon.Height - size.Height) / 2,
+                                         size.Width, size.Height);
+                }
+                // the whole item width and up to two lines, like Windows draws it (the label bounds are one short line)
+                var text = new Rectangle(e.Bounds.X + 2, label.Y, e.Bounds.Width - 4, Math.Max(label.Height, e.Bounds.Bottom - label.Y));
+                if (sel) using (var b = new SolidBrush(Theme.AccentFill)) e.Graphics.FillRectangle(b, text);
+                TextRenderer.DrawText(e.Graphics, e.Item.Text, lv.Font, text, sel ? Theme.AccentText : lv.ForeColor,
+                                      TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+            };
+        }
+
+        // UseMnemonic off: "Clock & Weather" must not turn into an underlined "W"
+        static Label Note(string text, int x, int y) { return new Label { Text = text, Location = new Point(x, y), AutoSize = true, Tag = "subtle", UseMnemonic = false }; }
 
         static Button Btn(string text, int x, int y, int w, Action click, bool primary = false)
         {
@@ -478,7 +522,7 @@ namespace AuraBoxControl
             if (ok)
             {
                 failedTries = 0; nextTry = DateTime.MaxValue;
-                status.Text = "Connected to " + cfg.Mac + (syncBox.Checked ? " — clock synced to " + DateTime.Now.ToString("t") : "");
+                status.Text = "Connected to AuraBox";   // the address is in the device list
                 SaveSettings();
                 return;
             }
@@ -624,24 +668,31 @@ namespace AuraBoxControl
             card.Controls.Add(Note("Pausing here turns the playlist off until you run it again.", 224, 182));
             p.Controls.Add(card);
 
-            var quick = NewCard("Show Now", 0, 264, W, 104);
-            string[] picks = { "Clock", "Weather", "Lava Clock", "Fireplace" };
-            Action[] acts = {
-                delegate { StopRotationForManual(); ShowClockNow(); },
-                delegate { ShowWeatherNow(); },
-                delegate { PlayLive("lavaclock"); },
-                delegate { PlayLive("fire"); } };
-            for (int k = 0; k < picks.Length; k++) quick.Controls.Add(Btn(picks[k], 12 + k * 170, 44, 162, acts[k]));
-            p.Controls.Add(quick);
-
-            var note = NewCard("Flash a Notification Icon", 0, 380, W, 124);
-            for (int k = 0; k < Proto.NotifyNames.Length; k++)
+            // eight quick picks; right-click one to choose what it shows (saved)
+            var quick = NewCard("Show Now", 0, 264, W, 154);
+            for (int k = 0; k < Settings.ShowNowSlots; k++)
             {
-                int code = k;
-                note.Controls.Add(Btn(Proto.NotifyNames[k], 12 + (k % 5) * 136, 40 + (k / 5) * 38, 128,
-                    delegate { FlashNotification(code); }));
+                int slot = k;
+                var b = Btn(ShowNowName(cfg.ShowNow[slot]), 12 + (k % 4) * 170, 40 + (k / 4) * 40, 162, delegate { ShowNowRun(cfg.ShowNow[slot]); });
+                var menu = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true, Renderer = new MenuRenderer() };
+                menu.Opening += delegate
+                {
+                    menu.Items.Clear();
+                    menu.Items.Add(new ToolStripMenuItem("Show on this button:") { Enabled = false });
+                    foreach (var choice in ShowNowChoices())
+                    {
+                        string id = choice.Key;
+                        var item = new ToolStripMenuItem(choice.Value) { Checked = id == cfg.ShowNow[slot] };
+                        item.Click += delegate { cfg.ShowNow[slot] = id; b.Text = ShowNowName(id); SaveSettings(); };
+                        menu.Items.Add(item);
+                    }
+                };
+                b.ContextMenuStrip = menu;
+                quick.Controls.Add(b);
             }
-            p.Controls.Add(note);
+            quick.Controls.Add(Note("Right-click a button to choose what it shows.", 14, 122));
+            p.Controls.Add(quick);
+            p.Controls.Add(Note("Notification icons are on the Original Modes page.", 2, 430));
 
             var tick = new System.Windows.Forms.Timer { Interval = 200 };
             tick.Tick += delegate
@@ -669,6 +720,35 @@ namespace AuraBoxControl
         }
 
         volatile string showing;   // name of a manual job (live animation, clock...) for the Now page
+
+        // what a Show Now button can play: the clock, the weather, a live animation, or a built-in mode
+        static List<KeyValuePair<string, string>> ShowNowChoices()
+        {
+            var list = new List<KeyValuePair<string, string>> {
+                new KeyValuePair<string, string>("clock", "Clock"), new KeyValuePair<string, string>("weather", "Weather") };
+            foreach (var la in LiveAnims) list.Add(new KeyValuePair<string, string>(la.Id, la.Name));
+            for (int m = 0; m < Proto.ModeNames.Length; m++) list.Add(new KeyValuePair<string, string>("mode" + m, Proto.ModeNames[m] + " (built-in)"));
+            return list;
+        }
+
+        static string ShowNowName(string id)
+        {
+            foreach (var c in ShowNowChoices()) if (c.Key == id) return c.Value;
+            return id;
+        }
+
+        void ShowNowRun(string id)
+        {
+            if (id == "clock") { StopRotationForManual(); ShowClockNow(); }
+            else if (id == "weather") ShowWeatherNow();
+            else if (id.StartsWith("mode"))
+            {
+                int m = id[4] - '0';
+                StopRotationForManual();
+                Run(delegate { box.SetMode(m); }, "Mode: " + Proto.ModeNames[m]);
+            }
+            else PlayLive(id);
+        }
 
         // A notification icon needs the screen to itself: the playlist (or whatever is playing) holds its next frame
         // for a few seconds, then the box gets back what it showed before. Its time keeps counting meanwhile.
@@ -744,8 +824,16 @@ namespace AuraBoxControl
                                             AutoSize = true, Tag = "subtle" });
             p.Controls.Add(colors);
 
-            p.Controls.Add(Note("Brightness is the slider at the bottom of the window,\r\nbeside the status message.\r\n\r\n" +
-                                "The audio input (AUX jack or Bluetooth) is on the Settings page.", 358, 130));
+            // the box's own notification icons; playback holds while one shows (see FlashNotification)
+            var note = NewCard("Flash a Notification Icon", 356, 124, W - 356, 260);
+            for (int k = 0; k < Proto.NotifyNames.Length; k++)
+            {
+                int code = k;
+                note.Controls.Add(Btn(Proto.NotifyNames[k], 12 + (k % 2) * 164, 40 + (k / 2) * 42, 156, delegate { FlashNotification(code); }));
+            }
+            p.Controls.Add(note);
+            p.Controls.Add(Note("Brightness is the slider at the bottom of the window. The audio input (AUX jack or Bluetooth)\r\n" +
+                                "is on the Settings page.", 2, 396));
             return p;
         }
 
@@ -787,6 +875,45 @@ namespace AuraBoxControl
                 p.Controls.Add(Btn(labels[k], 376 + (k % 2) * 166, 230 + (k / 2) * 38, 158, actions[k], k == 0));
             liveBox = new CheckBox { Text = "Live update while drawing", Location = new Point(378, 350), AutoSize = true };
             p.Controls.Add(liveBox);
+
+            // the animation's frames as a strip under the editor: click to pick one, double-click to edit it
+            var strip = NewCard("Animation Frames (up to 8): click to pick, double-click to edit", 0, 380, W, 136);
+            for (int k = 0; k < 8; k++)
+            {
+                int i = k, x = 12 + k * 58;
+                frameSlots[k] = new PixelGrid(5) { Location = new Point(x, 34), ReadOnly = true, Cursor = Cursors.Hand };
+                frameRims[k] = new Label { Location = new Point(x - 3, 31), Size = new Size(56, 56), Tag = "swatch", BackColor = Color.Transparent };
+                frameSlots[k].Click += delegate { if (i < frames.Count) { selFrame = i; RefreshFrames(); } };
+                frameSlots[k].DoubleClick += delegate { if (i < frames.Count) { selFrame = i; RefreshFrames(); LoadFrame(); } };
+                strip.Controls.Add(frameSlots[k]); strip.Controls.Add(frameRims[k]);   // added after, so the rim sits behind
+            }
+            strip.Controls.Add(new Label { Text = "Delay:", Location = new Point(476, 40), AutoSize = true });
+            delayBox = new NumericUpDown { Minimum = 1, Maximum = 255, Value = Math.Max(1, Math.Min(255, cfg.AnimDelay)), Location = new Point(522, 37), Width = 50 };
+            delayBox.ValueChanged += delegate { cfg.AnimDelay = (int)delayBox.Value; };
+            new ToolTip().SetToolTip(delayBox, "Time between frames on the box: higher is slower");
+            strip.Controls.Add(delayBox);
+            strip.Controls.Add(Btn("Send Animation", 580, 34, 108, delegate
+            {
+                if (frames.Count == 0) { status.Text = "Add at least one frame first"; return; }
+                StopRotationForManual();
+                SendAnimation(frames);
+            }, true));
+            string[] labels2 = { "Add Drawing", "Replace", "Edit Frame", "Move Left", "Remove", "Clear All", "Import GIF..." };
+            Action[] actions2 = {
+                delegate {
+                    if (frames.Count >= 8) { MessageBox.Show(this, "The AuraBox holds at most 8 frames.", "AuraBox Control"); return; }
+                    frames.Add((int[])grid.Pixels.Clone()); selFrame = frames.Count - 1; RefreshFrames(); },
+                delegate { if (selFrame >= 0 && selFrame < frames.Count) { frames[selFrame] = (int[])grid.Pixels.Clone(); RefreshFrames(); } },
+                LoadFrame,
+                delegate {
+                    int i = selFrame;
+                    if (i > 0 && i < frames.Count) { var f = frames[i]; frames.RemoveAt(i); frames.Insert(i - 1, f); selFrame = i - 1; RefreshFrames(); } },
+                delegate { if (selFrame >= 0 && selFrame < frames.Count) { frames.RemoveAt(selFrame); RefreshFrames(); } },
+                delegate { frames.Clear(); selFrame = -1; RefreshFrames(); },
+                ImportPicture };
+            for (int k = 0; k < labels2.Length; k++) strip.Controls.Add(Btn(labels2[k], 12 + k * 96, 94, 90, actions2[k]));
+            p.Controls.Add(strip);
+            RefreshFrames();
             return p;
         }
 
@@ -844,7 +971,7 @@ namespace AuraBoxControl
                         case ImportAction.AddFrames:
                             foreach (var f in d.Frames) if (frames.Count < 8) frames.Add(f);
                             RefreshFrames();
-                            status.Text = "Added frames to the Build Animation page (" + frames.Count + "/8)";
+                            status.Text = "Added frames to the animation strip on Draw & Animate (" + frames.Count + "/8)";
                             break;
                     }
                 }
@@ -927,6 +1054,7 @@ namespace AuraBoxControl
             var images = new ImageList { ImageSize = new Size(thumb, thumb), ColorDepth = ColorDepth.Depth24Bit };
             var view = new ListView { Location = new Point(0, 40), Size = new Size(W, 412), View = View.LargeIcon, LargeImageList = images,
                                       MultiSelect = false, HideSelection = false, BorderStyle = BorderStyle.None };
+            AccentIcons(view);
             p.Controls.Add(view);
             var shown = new List<GalleryItem>();
             var preview = new System.Windows.Forms.Timer { Interval = 250 };
@@ -934,7 +1062,7 @@ namespace AuraBoxControl
             var pageCache = new Dictionary<string, List<GalleryItem>>();      // "source:page" -> deduplicated items
             var downloads = new Dictionary<string, List<int[]>>();            // FileId -> converted frames
             var seen = new HashSet<string>();                                 // looks already shown (built-ins included)
-            foreach (var it in items) seen.Add(Signature(it.Frames));
+            foreach (var it in items) { seen.Add(Signature(it.Frames)); string n = NameKey(it.Name); if (n.Length > 0) seen.Add(n); }
 
             Action<GalleryItem> addItem = delegate (GalleryItem it)
             {
@@ -975,7 +1103,7 @@ namespace AuraBoxControl
                 if (fav)
                 {
                     view.BeginUpdate();
-                    foreach (var it in favorites) addItem(it);
+                    foreach (var it in SortedUnique(favorites)) addItem(it);
                     view.EndUpdate();
                     status.Text = favorites.Count == 0 ? "No favorites yet: select a design and press Add to Favorites" : favorites.Count + " favorites";
                     return;
@@ -983,7 +1111,7 @@ namespace AuraBoxControl
                 if (!cloud)
                 {
                     view.BeginUpdate();
-                    foreach (var it in items) if (it.Category == cats[sel]) addItem(it);
+                    foreach (var it in SortedUnique(items.FindAll(i => i.Category == cats[sel]))) addItem(it);
                     view.EndUpdate();
                     return;
                 }
@@ -1020,10 +1148,10 @@ namespace AuraBoxControl
                                     downloads[e.Id] = fr;
                                 }
                             // duplicates are judged by how they look on the box (after cropping and color snapping)
-                            string sig = Signature(fr);
+                            string sig = Signature(fr), nameKey = NameKey(e.Name);
                             bool dup;
-                            lock (seen) dup = seen.Contains(sig);
-                            if (dup || !mine.Add(sig)) { dupes++; continue; }
+                            lock (seen) dup = seen.Contains(sig) || (nameKey.Length > 0 && seen.Contains(nameKey));
+                            if (dup || !mine.Add(sig) || (nameKey.Length > 0 && !mine.Add(nameKey))) { dupes++; continue; }
                             var it = new GalleryItem { Category = "Cloud", Name = e.Name };
                             foreach (var f in Distinct(fr)) it.Frames.Add(f);
                             kept.Add(it);
@@ -1032,7 +1160,17 @@ namespace AuraBoxControl
                         if (gen != generation) return;
                         // only a fully loaded page counts toward "already seen", so a cancelled load never hides anything
                         lock (seen) foreach (var sig in mine) seen.Add(sig);
-                        BeginInvoke((Action)delegate { pageCache[key] = kept; });
+                        kept = SortedUnique(kept);
+                        BeginInvoke((Action)delegate
+                        {
+                            pageCache[key] = kept;
+                            if (gen != generation) return;
+                            // items appeared as they downloaded; now put the page in A-Z order
+                            view.BeginUpdate();
+                            view.Items.Clear(); images.Images.Clear(); shown.Clear();
+                            foreach (var it in kept) addItem(it);
+                            view.EndUpdate();
+                        });
                         SetStatus(kept.Count + " designs from the Divoom cloud" + (dupes > 0 ? " (" + dupes + " duplicates hidden)" : "") +
                                   " — 11×11 art cropped to 10×10");
                     }
@@ -1074,7 +1212,7 @@ namespace AuraBoxControl
                 var it = shown[view.SelectedIndices[0]];
                 grid.SetAll(it.Frames[0]);
                 if (it.IsAnimation) { frames.Clear(); foreach (var f in Sample(it.Frames)) frames.Add((int[])f.Clone()); RefreshFrames(); }
-                status.Text = "Loaded “" + it.Name + "” into Draw" + (it.IsAnimation ? " and Build Animation" : "");
+                status.Text = "Loaded “" + it.Name + "” into Draw & Animate" + (it.IsAnimation ? " (picture and frames)" : "");
             }));
             var playAll = Btn("Play All Frames From PC", 276, 462, 200, null);
             playAll.Click += delegate
@@ -1092,6 +1230,19 @@ namespace AuraBoxControl
             p.Controls.Add(Note("Double-click sends to the box (max 8 frames). Longer animations: Play All Frames From PC.", 2, 499));
             if (catBox.Items.Count > 0) catBox.SelectedIndex = 0;
             return p;
+        }
+
+        // Gallery lists run A to Z by name, and designs that share a name (ignoring case) show only once.
+        // Name keys get a prefix so they never collide with look signatures in the shared "seen" set.
+        static string NameKey(string name) { string n = (name ?? "").Trim().ToLowerInvariant(); return n.Length == 0 ? "" : "name:" + n; }
+
+        static List<GalleryItem> SortedUnique(IEnumerable<GalleryItem> list)
+        {
+            var names = new HashSet<string>();
+            var result = new List<GalleryItem>();
+            foreach (var it in list) { string k = NameKey(it.Name); if (k.Length == 0 || names.Add(k)) result.Add(it); }
+            result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
+            return result;
         }
 
         // what an item looks like on the box; an animation whose frames are all identical counts as a still picture
@@ -1118,52 +1269,13 @@ namespace AuraBoxControl
             return list;
         }
 
-        // ---------- animation ----------
-        Panel BuildAnimPage()
-        {
-            var p = NewPage();
-            var card = NewCard("Frames (Up to 8)", 0, 0, W, 216);
-            card.Controls.Add(Note("Draw on the Draw page, then add frames here. Double-click a frame to edit it.", 12, 32));
-            frameList = new ListBox { Location = new Point(12, 56), Size = new Size(220, 106), IntegralHeight = false };
-            frameList.DoubleClick += delegate { LoadFrame(); };
-            card.Controls.Add(frameList);
-
-            string[] labels = { "Add Current Drawing", "Replace With Drawing", "Load Into Editor", "Move Up", "Remove", "Clear All", "Import Animated GIF..." };
-            Action[] actions = {
-                delegate {
-                    if (frames.Count >= 8) { MessageBox.Show(this, "The AuraBox holds at most 8 frames.", "AuraBox Control"); return; }
-                    frames.Add((int[])grid.Pixels.Clone()); RefreshFrames(); },
-                delegate { int i = frameList.SelectedIndex; if (i >= 0) { frames[i] = (int[])grid.Pixels.Clone(); RefreshFrames(); } },
-                LoadFrame,
-                delegate { int i = frameList.SelectedIndex; if (i > 0) { var f = frames[i]; frames.RemoveAt(i); frames.Insert(i - 1, f); RefreshFrames(); frameList.SelectedIndex = i - 1; } },
-                delegate { int i = frameList.SelectedIndex; if (i >= 0) { frames.RemoveAt(i); RefreshFrames(); } },
-                delegate { frames.Clear(); RefreshFrames(); },
-                ImportPicture };
-            for (int k = 0; k < labels.Length; k++)
-                card.Controls.Add(Btn(labels[k], 246 + (k % 3) * 148, 56 + (k / 3) * 38, 140, actions[k]));
-
-            card.Controls.Add(new Label { Text = "Frame delay (higher = slower):", Location = new Point(12, 178), AutoSize = true });
-            delayBox = new NumericUpDown { Minimum = 1, Maximum = 255, Value = Math.Max(1, Math.Min(255, cfg.AnimDelay)), Location = new Point(200, 175), Width = 64 };
-            delayBox.ValueChanged += delegate { cfg.AnimDelay = (int)delayBox.Value; };
-            card.Controls.Add(delayBox);
-            card.Controls.Add(Btn("Send Animation", 542, 132, 140, delegate
-            {
-                if (frames.Count == 0) { status.Text = "Add at least one frame first"; return; }
-                StopRotationForManual();
-                SendAnimation(frames);
-            }, true));
-            p.Controls.Add(card);
-
-            p.Controls.Add(Note("Built-in animations drawn by this PC (no frame limit) are on the Animations page.", 2, 228));
-            return p;
-        }
-
         // ---------- live animations: generated on this PC frame by frame, each with its own speed ----------
         Panel BuildLivePage()
         {
             var p = NewPage();
             var live = NewCard("Played From This PC", 0, 0, W, 250);
             var pick = new ListBox { Location = new Point(12, 40), Size = new Size(190, 196), IntegralHeight = false };
+            AccentList(pick);
             foreach (var la in LiveAnims) pick.Items.Add(la.Name);
             live.Controls.Add(pick);
             var title = new Label { Location = new Point(218, 38), Size = new Size(W - 218 - 180, 26), Font = Theme.Semibold(12f), UseMnemonic = false };
@@ -1226,20 +1338,21 @@ namespace AuraBoxControl
             Run(delegate { box.ShowAnimation(copy, delay); }, "Animation sent (" + Math.Min(8, copy.Count) + " frames)");
         }
 
+        // redraw the frame strip; the picked frame gets an accent-colored rim
         void RefreshFrames()
         {
-            frameList.Items.Clear();
-            for (int k = 0; k < frames.Count; k++)
+            if (selFrame >= frames.Count) selFrame = frames.Count - 1;
+            for (int k = 0; k < 8; k++)
             {
-                int lit = 0; foreach (int c in frames[k]) if (c != 0) lit++;
-                frameList.Items.Add("Frame " + (k + 1) + "   (" + lit + " lit pixels)");
+                if (frameSlots[k] == null) return;
+                frameSlots[k].SetAll(k < frames.Count ? frames[k] : new int[100]);
+                frameRims[k].BackColor = k == selFrame ? Theme.AccentFill : Color.Transparent;
             }
         }
 
         void LoadFrame()
         {
-            int i = frameList.SelectedIndex;
-            if (i >= 0) grid.SetAll(frames[i]);
+            if (selFrame >= 0 && selFrame < frames.Count) grid.SetAll(frames[selFrame]);
         }
 
         // frames generated on this PC and sent one at a time (snakes)
@@ -1300,47 +1413,47 @@ namespace AuraBoxControl
             }
         }
 
-        // ---------- clock ----------
-        Panel BuildClockPage()
+        // ---------- clock & weather ----------
+        Panel BuildClockWeatherPage()
         {
             var p = NewPage();
-            var card = NewCard("Clock", 0, 0, W, 270);
-            var now = new Label { Location = new Point(12, 36), AutoSize = true, Font = Theme.Semibold(26f) };
+            var card = NewCard("Clock", 0, 0, W, 176);
+            var now = new Label { Location = new Point(12, 30), AutoSize = true, Font = Theme.Semibold(22f) };
             var tick = new System.Windows.Forms.Timer { Interval = 500 };
             tick.Tick += delegate { now.Text = DateTime.Now.ToString(H24 ? "H:mm" : "h:mm tt"); };
-            card.Controls.Add(new Label { Text = "Hours:", Location = new Point(330, 50), AutoSize = true });
-            var hours = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(384, 46), Width = 170 };
+            card.Controls.Add(new Label { Text = "Hours:", Location = new Point(220, 44), AutoSize = true });
+            var hours = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(274, 40), Width = 150 };
             hours.Items.AddRange(new object[] { "Like Windows", "12-hour", "24-hour" });
             hours.SelectedIndex = cfg.Clock24 + 1;
             hours.SelectedIndexChanged += delegate { cfg.Clock24 = clock24 = hours.SelectedIndex - 1; SaveSettings(); };
             card.Controls.Add(hours);
             tick.Start();
             card.Controls.Add(now);
-            card.Controls.Add(Note("PC time. The AuraBox keeps time on its own once synced.", 14, 92));
-            var face = new PixelGrid(10) { Location = new Point(W - 124, 36), ReadOnly = true };
+            var face = new PixelGrid(8) { Location = new Point(W - 96, 34), ReadOnly = true };
             card.Controls.Add(face);
             var steady = new RadioButton { Text = "Steady clock drawn by this app (no blinking colon; keep the app running)",
-                                           Location = new Point(14, 124), AutoSize = true, Checked = cfg.SteadyClock };
+                                           Location = new Point(14, 84), AutoSize = true, Checked = cfg.SteadyClock };
             var builtIn = new RadioButton { Text = "AuraBox built-in clock (blinking colon; works without the PC)",
-                                            Location = new Point(14, 152), AutoSize = true, Checked = !cfg.SteadyClock };
+                                            Location = new Point(14, 108), AutoSize = true, Checked = !cfg.SteadyClock };
             steady.CheckedChanged += delegate { cfg.SteadyClock = steady.Checked; SaveSettings(); };
             card.Controls.Add(steady); card.Controls.Add(builtIn);
             tick.Tick += delegate { face.Visible = steady.Checked; if (face.Visible) face.SetAll(ClockFace(DateTime.Now)); };
-            card.Controls.Add(Btn("Show Clock Now", 12, 190, 150, delegate
+            card.Controls.Add(Btn("Show Clock Now", 12, 136, 150, delegate
             {
                 StopRotationForManual();
                 ShowClockNow();
             }, true));
-            card.Controls.Add(Btn("Sync to PC Time", 170, 190, 150, delegate
+            card.Controls.Add(Btn("Sync to PC Time", 170, 136, 150, delegate
             {
                 Run(delegate { box.SetTime(); }, "Clock synced to " + DateTime.Now.ToString("t"));
             }));
-            syncBox = new CheckBox { Text = "Sync the clock whenever the app connects", Location = new Point(14, 234), AutoSize = true, Checked = cfg.SyncOnConnect };
+            syncBox = new CheckBox { Text = "Sync the clock whenever the app connects", Location = new Point(334, 142), AutoSize = true, Checked = cfg.SyncOnConnect };
             card.Controls.Add(syncBox);
             p.Controls.Add(card);
 
-            p.Controls.Add(Note("While the playlist runs, the clock is re-synced every 6 hours. Set how long each clock shows on the Playlist page.\r\n" +
-                                "The Lava Clock's options are on the Animations page.", 2, 282));
+            AddWeatherCard(p, 186);
+            p.Controls.Add(Note("The clock re-syncs every 6 hours while the playlist runs; how long each item shows is set on the Playlist page.\r\n" +
+                                "The Lava Clock's options are on the Animations page.", 2, 482));
             return p;
         }
 
@@ -1361,7 +1474,7 @@ namespace AuraBoxControl
             puddle.CheckedChanged += delegate { cfg.LavaPuddle = LavaClock.Puddle = puddle.Checked; SaveSettings(); };
             lava.Controls.Add(puddle);
             lava.Controls.Add(Btn("Show Lava Clock Now", 12, 124, 190, delegate { PlayLive("lavaclock"); }, true));
-            lava.Controls.Add(Note("Uses the 12/24-hour setting on the Clock page.", 14, 164));
+            lava.Controls.Add(Note("Uses the 12/24-hour setting on the Clock & Weather page.", 14, 164));
             LavaClock lavaSim = null; bool lavaH24 = H24;
             var lavaTick = new System.Windows.Forms.Timer { Interval = 100 };
             lavaTick.Tick += delegate
@@ -1411,30 +1524,28 @@ namespace AuraBoxControl
         }
 
         // ---------- weather ----------
-        Panel BuildWeatherPage()
+        // weather: location, what's showing (from Open-Meteo), and how it is shown; one card on the Clock & Weather page
+        void AddWeatherCard(Panel p, int y)
         {
-            var p = NewPage();
-            var loc = NewCard("Location", 0, 0, W, 84);
-            placeBox = new TextBox { Location = new Point(12, 38), Width = 260, Text = cfg.Place };
-            loc.Controls.Add(placeBox);
-            loc.Controls.Add(Btn("Look Up", 280, 36, 90, LookUpPlace));
-            placeLabel = new Label { Location = new Point(380, 42), AutoSize = true, Tag = "subtle" };
-            loc.Controls.Add(placeLabel);
+            var now = NewCard("Weather (Open-Meteo)", 0, y, W, 286);
+            placeBox = new TextBox { Location = new Point(12, 34), Width = 220, Text = cfg.Place };
+            now.Controls.Add(placeBox);
+            now.Controls.Add(Btn("Look Up", 240, 32, 90, LookUpPlace));
+            placeLabel = new Label { Location = new Point(340, 38), AutoSize = true, Tag = "subtle" };
+            now.Controls.Add(placeLabel);
             UpdatePlaceLabel();
-            p.Controls.Add(loc);
 
-            var now = NewCard("Current Weather (Open-Meteo)", 0, 96, W, 210);
-            weatherIcon = new PixelGrid(14) { Location = new Point(12, 40), ReadOnly = true };
-            weatherTemp = new PixelGrid(14) { Location = new Point(164, 40), ReadOnly = true };
+            weatherIcon = new PixelGrid(9) { Location = new Point(12, 72), ReadOnly = true };
+            weatherTemp = new PixelGrid(9) { Location = new Point(112, 72), ReadOnly = true };
             now.Controls.Add(weatherIcon); now.Controls.Add(weatherTemp);
-            weatherLabel = new Label { Location = new Point(320, 40), Size = new Size(360, 80), Text = "Not loaded yet" };
+            weatherLabel = new Label { Location = new Point(220, 72), Size = new Size(W - 232, 54), Text = "Not loaded yet" };
             now.Controls.Add(weatherLabel);
-            now.Controls.Add(Btn("Show Weather Now", 320, 140, 160, delegate
+            now.Controls.Add(Btn("Show Weather Now", 220, 130, 160, delegate
             {
                 // one weather period now, then back to the clock (or on with the playlist)
                 ShowWeatherNow();
             }, true));
-            now.Controls.Add(Btn("Refresh", 488, 140, 100, delegate { ThreadPool.QueueUserWorkItem(delegate { GetWeather(true); }); }));
+            now.Controls.Add(Btn("Refresh", 388, 130, 100, delegate { ThreadPool.QueueUserWorkItem(delegate { GetWeather(true); }); }));
             p.Controls.Add(now);
             var anim = new System.Windows.Forms.Timer { Interval = 300 };
             int bx = 0, by = 0, vx = 1, vy = 1, ix = 0, iy = 0, ivx = 1, ivy = 1;
@@ -1468,23 +1579,31 @@ namespace AuraBoxControl
             };
             anim.Start();
 
-            var opt = NewCard("Display", 0, 318, W, 146);
-            opt.Controls.Add(new Label { Text = "Switch between icon and temperature every", Location = new Point(12, 42), AutoSize = true });
-            var flip = new NumericUpDown { Minimum = 2, Maximum = 60, Value = Math.Max(2, Math.Min(60, cfg.WeatherFlip)), Location = new Point(290, 39), Width = 56 };
+            now.Controls.Add(new Label { Text = "Switch between icon and temperature every", Location = new Point(12, 180), AutoSize = true });
+            var flip = new NumericUpDown { Minimum = 2, Maximum = 60, Value = Math.Max(2, Math.Min(60, cfg.WeatherFlip)), Location = new Point(290, 177), Width = 56 };
             flip.ValueChanged += delegate { cfg.WeatherFlip = (int)flip.Value; };
-            opt.Controls.Add(flip);
-            opt.Controls.Add(new Label { Text = "seconds", Location = new Point(352, 42), AutoSize = true });
-            var animBox = new CheckBox { Text = "Animated icons (falling rain, drifting snow, lightning...)", Location = new Point(14, 76), AutoSize = true,
+            now.Controls.Add(flip);
+            now.Controls.Add(new Label { Text = "seconds", Location = new Point(352, 180), AutoSize = true });
+            var animBox = new CheckBox { Text = "Animated icons (falling rain, drifting snow, lightning...)", Location = new Point(14, 212), AutoSize = true,
                                          Checked = cfg.AnimatedIcons };
             animBox.CheckedChanged += delegate { cfg.AnimatedIcons = animBox.Checked; if (weatherFrames.Count > 0) weatherIcon.SetAll(weatherFrames[0]); };
-            opt.Controls.Add(animBox);
-            var bounceBox = new CheckBox { Text = "Bounce the icon and temperature around the screen", Location = new Point(14, 108), AutoSize = true,
+            now.Controls.Add(animBox);
+            var bounceBox = new CheckBox { Text = "Bounce the icon and temperature around the screen", Location = new Point(14, 242), AutoSize = true,
                                            Checked = cfg.BounceTemp };
             bounceBox.CheckedChanged += delegate { cfg.BounceTemp = bounceBox.Checked; SaveSettings(); };
-            opt.Controls.Add(bounceBox);
-            p.Controls.Add(opt);
-            p.Controls.Add(Note("How long weather stays on screen is set on the Playlist page. Fahrenheit or Celsius is under Settings.", 2, 474));
-            return p;
+            now.Controls.Add(bounceBox);
+
+            // one unit for everything: the weather and the box's own thermometer (Temperature mode)
+            now.Controls.Add(new Label { Text = "Temperature:", Location = new Point(480, 180), AutoSize = true });
+            RadioRow(now, new[] { "Fahrenheit", "Celsius" }, new[] { 480, 590 }, 210, cfg.Fahrenheit ? 0 : 1, delegate (int k)
+            {
+                bool f = k == 0;
+                cfg.Fahrenheit = cfg.ThermoFahrenheit = f; SaveSettings();
+                lock (weatherGate) weather = null;
+                ThreadPool.QueueUserWorkItem(delegate { GetWeather(true); });
+                if (box.Connected) Run(delegate { box.SetTempUnit(f); }, "Temperature unit: " + (f ? "Fahrenheit" : "Celsius"));
+            });
+            now.Controls.Add(Note("Also the box's own thermometer.", 480, 244));
         }
 
         // one weather period now, then back to the clock (or on with the playlist)
@@ -1921,37 +2040,25 @@ namespace AuraBoxControl
         Panel BuildSettingsPage()
         {
             var p = NewPage();
-            // appearance, temperature unit and audio input share one card; each row is its own radio group
-            var general = NewCard("General", 0, 0, W, 134);
+            // appearance and audio input share one card; each row is its own radio group
+            var general = NewCard("General", 0, 0, W, 104);
             general.Controls.Add(new Label { Text = "Appearance:", Location = new Point(14, 42), AutoSize = true });
             string[] modes = { "system", "light", "dark" };
             RadioRow(general, new[] { "Use my Windows setting", "Light", "Dark" }, new[] { 120, 310, 390 }, 40, Array.IndexOf(modes, cfg.ThemeMode),
                      delegate (int k) { cfg.ThemeMode = modes[k]; SaveSettings(); ApplyTheme(); });
 
-            // one unit for everything: the weather and the box's own thermometer (Temperature mode)
-            general.Controls.Add(new Label { Text = "Temperature:", Location = new Point(14, 72), AutoSize = true });
-            RadioRow(general, new[] { "Fahrenheit", "Celsius" }, new[] { 120, 310 }, 70, cfg.Fahrenheit ? 0 : 1, delegate (int k)
-            {
-                bool f = k == 0;
-                cfg.Fahrenheit = cfg.ThermoFahrenheit = f; SaveSettings();
-                lock (weatherGate) weather = null;
-                ThreadPool.QueueUserWorkItem(delegate { GetWeather(true); });
-                if (box.Connected) Run(delegate { box.SetTempUnit(f); }, "Temperature unit: " + (f ? "Fahrenheit" : "Celsius"));
-            });
-            general.Controls.Add(Note("(weather and the box's thermometer)", 400, 72));
-
             // sent on every connect; with no cable in the AUX jack the box stays on Bluetooth
-            general.Controls.Add(new Label { Text = "Audio input:", Location = new Point(14, 102), AutoSize = true });
-            RadioRow(general, new[] { "AUX (audio jack)", "Bluetooth" }, new[] { 120, 310 }, 100, cfg.AudioAux ? 0 : 1, delegate (int k)
+            general.Controls.Add(new Label { Text = "Audio input:", Location = new Point(14, 72), AutoSize = true });
+            RadioRow(general, new[] { "AUX (audio jack)", "Bluetooth" }, new[] { 120, 310 }, 70, cfg.AudioAux ? 0 : 1, delegate (int k)
             {
                 bool aux = k == 0;
                 cfg.AudioAux = aux; SaveSettings();
                 if (box.Connected) Run(delegate { box.SetAudioInput(aux); }, "Audio input: " + (aux ? "AUX" : "Bluetooth"));
             });
-            general.Controls.Add(Note("(AUX needs a cable in the jack)", 400, 102));
+            general.Controls.Add(Note("(AUX needs a cable in the jack)", 400, 72));
             p.Controls.Add(general);
 
-            var win = NewCard("Window and Startup", 0, 144, W, 160);
+            var win = NewCard("Window and Startup", 0, 114, W, 182);
             var trayBox = new CheckBox { Text = "Minimize to the system tray (keeps the playlist running in the background)", Location = new Point(14, 38),
                                          AutoSize = true, Checked = cfg.MinimizeToTray };
             trayBox.CheckedChanged += delegate { cfg.MinimizeToTray = trayBox.Checked; SaveSettings(); };
@@ -1978,18 +2085,19 @@ namespace AuraBoxControl
                 };
                 win.Controls.Add(rb);
             }
+            win.Controls.Add(Note("When AuraBox Control isn't running or connected, the AuraBox goes back to its built-in clock.", 14, 158));
             p.Controls.Add(win);
 
-            var backup = NewCard("Backup and Restore", 0, 314, W, 72);
+            var backup = NewCard("Backup and Restore", 0, 306, W, 72);
             backup.Controls.Add(Btn("Export Settings...", 12, 34, 162, delegate { ExportSettings(); }));
             backup.Controls.Add(Btn("Import Settings...", 182, 34, 162, delegate { ImportSettings(); }));
-            backup.Controls.Add(Note("One file with all settings, the playlist\r\nand your favorites.", 360, 32));
+            backup.Controls.Add(Note("Settings and favorites are saved next to the program.\r\nExport puts them, with the playlist, in one file.", 360, 32));
             p.Controls.Add(backup);
 
-            var about = NewCard("About", 0, 396, W, 124);
+            var about = NewCard("About", 0, 388, W, 124);
             about.Controls.Add(new Label { Text = "AuraBox Control — a portable app for the Divoom AuraBox over Bluetooth.", Location = new Point(14, 34), AutoSize = true });
-            about.Controls.Add(Note("Settings and favorites are saved next to the program (AuraBoxControl.ini, favorites.txt).", 14, 56));
-            about.Controls.Add(Note("This is an independent app. It is not affiliated with, endorsed by or supported by\r\nDivoom, the maker of the AuraBox.", 14, 78));
+            about.Controls.Add(Note("This is an independent app. It is not affiliated with, endorsed by or supported by\r\nDivoom, the maker of the AuraBox.", 14, 56));
+            about.Controls.Add(Note("Some features, like live weather and the Divoom cloud gallery, need an internet connection.", 14, 94));
             p.Controls.Add(about);
             return p;
         }

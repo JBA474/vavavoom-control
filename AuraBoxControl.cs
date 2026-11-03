@@ -717,6 +717,10 @@ namespace AuraBoxControl
         public bool AudioAux = true;        // audio input on connect: AUX jack (the box falls back to Bluetooth with no cable)
         public readonly Dictionary<string, int> AnimSpeeds = new Dictionary<string, int>();   // live animation id -> speed 1..10
         public const int DefaultSpeed = 6;
+        // the Now page's quick-pick buttons: "clock", "weather", a live animation id, or "mode<n>"
+        public const int ShowNowSlots = 8;
+        public static readonly string[] DefaultShowNow = { "clock", "weather", "lavaclock", "fire", "bricks", "lava", "stars", "laos" };
+        public string[] ShowNow = (string[])DefaultShowNow.Clone();
 
         public int SpeedOf(string id)
         {
@@ -779,6 +783,11 @@ namespace AuraBoxControl
                 else if (k == "bounce_temp") s.BounceTemp = v != "0";
                 else if (k == "only_on_items") s.OnlyOnItems = v != "0";
                 else if (k == "audio_aux") s.AudioAux = v != "0";
+                else if (k == "show_now")
+                {
+                    string[] ids = v.Split(',');
+                    for (int i = 0; i < ShowNowSlots && i < ids.Length; i++) if (ids[i].Trim().Length > 0) s.ShowNow[i] = ids[i].Trim();
+                }
                 else if (k == "anim_speeds")
                     foreach (string part in v.Split(','))
                     {
@@ -820,7 +829,7 @@ namespace AuraBoxControl
                           "\r\nweather_flip=" + WeatherFlip + "\r\nanimated_icons=" + (AnimatedIcons ? 1 : 0) + "\r\nanim_delay=" + AnimDelay +
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
-                          "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nanim_speeds=" + SpeedsText() +
+                          "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\n";
             return text;
         }
