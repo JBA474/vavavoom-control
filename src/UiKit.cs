@@ -390,7 +390,7 @@ namespace AuraBoxControl
         static readonly string[,] All = {
             { "clock", "Clock" }, { "weather", "Weather" }, { "mode1", "Temperature (Built-In Sensor)" }, { "mode2", "Color Light" },
             { "mode3", "Sound Light" }, { "mode4", "Forest" }, { "mode5", "Marquee" }, { "mode6", "Color Pieces" },
-            { "snakes", "Snake Chase" }, { "blocks", "Tetris" }, { "stars", "Hyperspace" }, { "rain", "Rain on a Window" }, { "fire", "Fireplace" }, { "balls", "Bouncing Balls" }, { "bricks", "Brick Breaker" }, { "laos", "Laos Flag" },{ "lava", "Lava Lamp" }, { "lavaclock", "Lava Clock" }, { "text", "Scrolling Text" }, { "drawing", "Current Drawing" }, { "animation", "Current Animation" } };
+            { "snakes", "Snake Chase" }, { "blocks", "Tetrix" }, { "stars", "Hyperspace" }, { "rain", "Rain on a Window" }, { "fire", "Fireplace" }, { "balls", "Bouncing Balls" }, { "bricks", "Brick Breaker" }, { "laos", "Laos Flag" },{ "lava", "Lava Lamp" }, { "lavaclock", "Lava Clock" }, { "text", "Scrolling Text" }, { "drawing", "Current Drawing" }, { "animation", "Current Animation" } };
 
         // sections on the Playlist page for items that are turned off
         public static readonly string[] Groups = { "Clock & Weather", "Animations", "Original Modes", "Your Content" };
