@@ -1236,7 +1236,7 @@ namespace AuraBoxControl
         {
             var p = NewPage();
             var card = NewCard("Scrolling Message", 0, 0, W, 300);
-            textBox = new TextBox { Location = new Point(12, 38), Width = W - 24, Text = "Hello from Windows!" };
+            textBox = new TextBox { Location = new Point(12, 38), Width = W - 24, Text = "I ❤️ U!" };
             card.Controls.Add(textBox);
             textColor = new ColorWheel { Location = new Point(12, 80), Size = new Size(150, 150), Value = 7 };
             card.Controls.Add(textColor);
@@ -1256,12 +1256,13 @@ namespace AuraBoxControl
                 TogglePlay(textPlay, delegate { MarqueeLoop(strip, color, DateTime.MaxValue); }, "Text");
             };
             card.Controls.Add(textPlay);
-            card.Controls.Add(Note("The text is sent frame by frame from this PC, so keep the app running (it can sit in the tray).", 12, 250));
+            card.Controls.Add(Note("Type ❤ or ♥ for a red heart.\r\n" +
+                                   "The text is sent frame by frame from this PC, so keep the app running (it can sit in the tray).", 12, 246));
             p.Controls.Add(card);
             return p;
         }
 
-        void MarqueeLoop(bool[,] strip, int color, DateTime until)
+        void MarqueeLoop(int[,] strip, int color, DateTime until)
         {
             int total = strip.GetLength(0) + 10;
             while (!jobStop && Before(until))
@@ -1829,7 +1830,7 @@ namespace AuraBoxControl
                 case "weather": WeatherPeriod(end); return;
                 case "clock": if (cfg.SteadyClock) { ClockLoop(end); return; } break;
                 case "text":
-                    bool[,] strip = null; int color = 7;
+                    int[,] strip = null; int color = 7;
                     if (!OnUi(delegate { strip = TextArt.Strip(textBox.Text, (string)textFont.SelectedItem); color = textColor.Value; })) return;
                     MarqueeLoop(strip, color, end);
                     return;

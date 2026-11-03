@@ -367,32 +367,71 @@ namespace AuraBoxControl
     // Text -> 10-pixel-high monochrome strip using a Windows font, for the scrolling marquee
     static class TextArt
     {
-        public static bool[,] Strip(string text, string fontName)
+        public const int Ink = -1;   // strip cell drawn in the chosen text color
+
+        // ❤ or ♥ in the text becomes this red pixel heart (an 8 px font can't draw an emoji legibly)
+        static readonly string[] Heart = { ".XX.XX.", "XXXXXXX", "XXXXXXX", ".XXXXX.", "..XXX..", "...X..." };
+        const int HeartTop = 3, HeartColor = 1;   // rows 3-8: level with the capitals of the default Tahoma
+
+        // the text as columns of 10 cells: 0 = off, Ink = text color, anything else = that palette color
+        public static int[,] Strip(string text, string fontName)
         {
             if (string.IsNullOrEmpty(text)) text = " ";
-            using (var font = new Font(fontName, 8f, FontStyle.Bold, GraphicsUnit.Pixel))
+            var cols = new List<int[]>();
+            var run = new StringBuilder();
+            for (int i = 0; i < text.Length; i++)
             {
+                char ch = text[i];
+                if (ch != '❤' && ch != '♥') { run.Append(ch); continue; }
+                AddText(cols, run.ToString(), fontName); run.Length = 0;
+                cols.Add(new int[10]);
+                for (int x = 0; x < Heart[0].Length; x++)
+                {
+                    var col = new int[10];
+                    for (int y = 0; y < Heart.Length; y++) if (Heart[y][x] == 'X') col[HeartTop + y] = HeartColor;
+                    cols.Add(col);
+                }
+                cols.Add(new int[10]);
+                if (i + 1 < text.Length && text[i + 1] == '️') i++;   // the emoji-style variant selector after ❤
+            }
+            AddText(cols, run.ToString(), fontName);
+            cols.Add(new int[10]); cols.Add(new int[10]);
+            var strip = new int[cols.Count, 10];
+            for (int x = 0; x < cols.Count; x++)
+                for (int y = 0; y < 10; y++) strip[x, y] = cols[x][y];
+            return strip;
+        }
+
+        static void AddText(List<int[]> cols, string text, string fontName)
+        {
+            if (text.Length == 0) return;
+            using (var font = new Font(fontName, 8f, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (var format = new StringFormat(StringFormat.GenericTypographic))
+            {
+                format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;   // keep the space before a heart
                 Size sz;
                 using (var probe = new Bitmap(1, 1))
                 using (var g = Graphics.FromImage(probe))
-                    sz = Size.Ceiling(g.MeasureString(text, font, PointF.Empty, StringFormat.GenericTypographic));
-                int w = Math.Max(1, sz.Width + 2);
+                    sz = Size.Ceiling(g.MeasureString(text, font, PointF.Empty, format));
+                int w = Math.Max(1, sz.Width);
                 using (var bmp = new Bitmap(w, 10))
                 using (var g = Graphics.FromImage(bmp))
                 {
                     g.Clear(Color.Black);
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SingleBitPerPixelGridFit;
-                    g.DrawString(text, font, Brushes.White, 0, 1, StringFormat.GenericTypographic);
-                    var strip = new bool[w, 10];
+                    g.DrawString(text, font, Brushes.White, 0, 1, format);
                     for (int x = 0; x < w; x++)
-                        for (int y = 0; y < 10; y++) strip[x, y] = bmp.GetPixel(x, y).R > 128;
-                    return strip;
+                    {
+                        var col = new int[10];
+                        for (int y = 0; y < 10; y++) if (bmp.GetPixel(x, y).R > 128) col[y] = Ink;
+                        cols.Add(col);
+                    }
                 }
             }
         }
 
         // offset 0 = blank screen; text enters from the right
-        public static int[] Window(bool[,] strip, int offset, int color)
+        public static int[] Window(int[,] strip, int offset, int color)
         {
             var px = new int[100];
             int w = strip.GetLength(0);
@@ -400,7 +439,11 @@ namespace AuraBoxControl
             {
                 int sx = offset + x - 10;
                 if (sx < 0 || sx >= w) continue;
-                for (int y = 0; y < 10; y++) if (strip[sx, y]) px[y * 10 + x] = color;
+                for (int y = 0; y < 10; y++)
+                {
+                    int v = strip[sx, y];
+                    if (v != 0) px[y * 10 + x] = v == Ink ? color : v;
+                }
             }
             return px;
         }
