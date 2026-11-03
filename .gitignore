@@ -1,0 +1,17 @@
+# build output
+*.exe
+*.pdb
+
+# personal data: settings (device address, location), saved favorites, backups
+AuraBoxControl.ini
+AuraBoxControl.ini.bak
+favorites.txt
+AuraBox Control Backup*.txt
+
+# Divoom's artwork and app (see README: make gallery.txt yourself)
+gallery.txt
+prepare.db
+*.apk
+*.xapk
+
+__pycache__/
