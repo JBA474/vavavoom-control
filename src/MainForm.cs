@@ -122,7 +122,7 @@ namespace AuraBoxControl
             menu.Items.Add(showNowMenu);
             menu.Items.Add("Sync Clock", null, delegate { Run(delegate { box.SetTime(); }, "Clock synced"); });
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Exit", null, delegate { Close(); });
+            menu.Items.Add("Exit", null, delegate { ExitApp(); });
             menu.Opening += delegate
             {
                 pauseMenu.Text = rotateBox.Checked ? "Pause Playlist" : "Resume Playlist";
@@ -145,8 +145,22 @@ namespace AuraBoxControl
             Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnSystemTheme;
 
             Shown += delegate { Startup(); };
-            FormClosing += delegate
+            FormClosing += delegate (object s, FormClosingEventArgs e)
             {
+                // with "minimize to the system tray" on, the X hides the window like minimize does; the app keeps running
+                // until Exit in the tray menu (or Windows shutting down, or an import restarting it)
+                if (cfg.MinimizeToTray && !exiting && e.CloseReason == CloseReason.UserClosing)
+                {
+                    e.Cancel = true;
+                    Hide();
+                    if (!toldAboutTray)
+                    {
+                        toldAboutTray = true;
+                        tray.ShowBalloonTip(5000, "AuraBox Control is still running", "It keeps the playlist going from the system tray. " +
+                                            "To quit, right-click the AuraBox icon and choose Exit.", ToolTipIcon.Info);
+                    }
+                    return;
+                }
                 closing = true;
                 Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnSystemTheme;
                 StopJob(); SaveSettings(); box.Close(); tray.Visible = false;
@@ -223,6 +237,10 @@ namespace AuraBoxControl
         }
 
         void RestoreFromTray() { Show(); WindowState = FormWindowState.Normal; Activate(); }
+
+        bool exiting, toldAboutTray;   // exiting: really quit, even with "minimize to the system tray" on
+
+        void ExitApp() { exiting = true; Close(); }
 
 // app.ico (made by tools\make_icon.ps1) holds every size from 16 to 256 px. It is the exe's own icon
         // (Explorer, Task Manager) and is embedded again so the window and tray pick the right size.
@@ -2189,7 +2207,7 @@ namespace AuraBoxControl
             p.Controls.Add(general);
 
             var win = NewCard("Window and Startup", 0, 114, W, 182);
-            var trayBox = new CheckBox { Text = "Minimize to the system tray (keeps the playlist running in the background)", Location = new Point(14, 38),
+            var trayBox = new CheckBox { Text = "Minimize and close (X) go to the system tray. Quit with Exit in the tray menu.", Location = new Point(14, 38),
                                          AutoSize = true, Checked = cfg.MinimizeToTray };
             trayBox.CheckedChanged += delegate { cfg.MinimizeToTray = trayBox.Checked; SaveSettings(); };
             win.Controls.Add(trayBox);
@@ -2308,7 +2326,7 @@ namespace AuraBoxControl
                     if (mark >= 0) File.WriteAllLines(Settings.DataFile("favorites.txt"), favLines.ToArray());
                     restoring = true;
                     System.Diagnostics.Process.Start(Application.ExecutablePath, "--restart");
-                    Close();
+                    ExitApp();
                 }
                 catch (Exception e) { status.Text = "Import failed: " + e.Message; }
             }
