@@ -93,13 +93,13 @@ namespace AuraBoxControl
             // sidebar groups; the page order here is the sidebar order
             AddGroup("Display");
             AddPage("\uE768", "Now", BuildNowPage());
-            AddPage("\uE7F5", "AuraBox", BuildBoxPage());
+            AddPage("\uE7F5", "Original Modes", BuildBoxPage());
             AddPage("\uE823", "Clock", BuildClockPage());
             AddPage("\uE753", "Weather", BuildWeatherPage());
-            AddPage("\uE8B2", "Live Animations", BuildLivePage());
+            AddPage("\uE8B2", "Animations", BuildLivePage());
             AddGroup("Create");
             AddPage("\uE70F", "Draw", BuildDrawPage());
-            AddPage("\uE714", "Animation", BuildAnimPage());
+            AddPage("\uE714", "Build Animation", BuildAnimPage());
             AddPage("\uE8D2", "Text", BuildTextPage());
             AddPage("\uE8B9", "Gallery", BuildGalleryPage());
             AddGroup("Schedule");
@@ -822,7 +822,7 @@ namespace AuraBoxControl
                         case ImportAction.AddFrames:
                             foreach (var f in d.Frames) if (frames.Count < 8) frames.Add(f);
                             RefreshFrames();
-                            status.Text = "Added frames to the Animation page (" + frames.Count + "/8)";
+                            status.Text = "Added frames to the Build Animation page (" + frames.Count + "/8)";
                             break;
                     }
                 }
@@ -1052,7 +1052,7 @@ namespace AuraBoxControl
                 var it = shown[view.SelectedIndices[0]];
                 grid.SetAll(it.Frames[0]);
                 if (it.IsAnimation) { frames.Clear(); foreach (var f in Sample(it.Frames)) frames.Add((int[])f.Clone()); RefreshFrames(); }
-                status.Text = "Loaded “" + it.Name + "” into Draw" + (it.IsAnimation ? " and Animation" : "");
+                status.Text = "Loaded “" + it.Name + "” into Draw" + (it.IsAnimation ? " and Build Animation" : "");
             }));
             var playAll = Btn("Play All Frames From PC", 276, 462, 200, null);
             playAll.Click += delegate
@@ -1132,7 +1132,7 @@ namespace AuraBoxControl
             }, true));
             p.Controls.Add(card);
 
-            p.Controls.Add(Note("Built-in animations drawn by this PC (no frame limit) are on the Live Animations page.", 2, 228));
+            p.Controls.Add(Note("Built-in animations drawn by this PC (no frame limit) are on the Animations page.", 2, 228));
             return p;
         }
 
@@ -1318,7 +1318,7 @@ namespace AuraBoxControl
             p.Controls.Add(card);
 
             p.Controls.Add(Note("While the playlist runs, the clock is re-synced every 6 hours. Set how long each clock shows on the Playlist page.\r\n" +
-                                "The Lava Clock's options are on the Live Animations page.", 2, 282));
+                                "The Lava Clock's options are on the Animations page.", 2, 282));
             return p;
         }
 
@@ -1595,7 +1595,7 @@ namespace AuraBoxControl
 
         // ---------- playlist ----------
         // Turned-on items are listed first, in play order, with arrows to reorder them. Turned-off items wait below in
-        // sections (Clock & Weather, Live Animations, Box Modes, Your Content); turning one on adds it to the end.
+        // sections (Clock & Weather, Animations, Original Modes, Your Content); turning one on adds it to the end.
         Panel BuildPlaylistPage()
         {
             var p = NewPage();

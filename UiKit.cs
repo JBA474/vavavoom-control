@@ -387,7 +387,7 @@ namespace AuraBoxControl
             { "snakes", "Snake Chase" }, { "blocks", "Falling Blocks" }, { "stars", "Hyperspace" }, { "rain", "Rain on a Window" }, { "fire", "Fireplace" }, { "balls", "Bouncing Balls" }, { "bricks", "Brick Breaker" }, { "laos", "Laos Flag" },{ "lava", "Lava Lamp" }, { "lavaclock", "Lava Clock" }, { "text", "Scrolling Text" }, { "drawing", "Current Drawing" }, { "animation", "Current Animation" } };
 
         // sections on the Playlist page for items that are turned off
-        public static readonly string[] Groups = { "Clock & Weather", "Live Animations", "Box Modes", "Your Content" };
+        public static readonly string[] Groups = { "Clock & Weather", "Animations", "Original Modes", "Your Content" };
 
         public string Group
         {
