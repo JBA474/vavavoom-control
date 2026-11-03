@@ -3,6 +3,7 @@
 *.pdb
 
 # personal data: settings (device address, location), saved favorites, backups
+settings/
 AuraBoxControl.ini
 AuraBoxControl.ini.bak
 favorites.txt

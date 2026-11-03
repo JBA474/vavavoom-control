@@ -739,16 +739,31 @@ namespace AuraBoxControl
             return Path.Combine(Path.GetDirectoryName(File.Exists(FallbackPath) && !File.Exists(PrimaryPath) ? FallbackPath : PrimaryPath), name);
         }
 
-        static string PrimaryPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AuraBoxControl.ini"); } }
+        // the settings file and favorites live in a "settings" folder next to the program
+        static string PrimaryPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings", "AuraBoxControl.ini"); } }
         static string FallbackPath
         {
             get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AuraBoxControl", "AuraBoxControl.ini"); }
         }
 
+        // Builds before 2026-11-03 kept both files right next to the exe: move them into settings\ once, so nothing resets.
+        static void MoveOldFiles()
+        {
+            string dir = Path.GetDirectoryName(PrimaryPath), old = AppDomain.CurrentDomain.BaseDirectory;
+            foreach (string name in new[] { "AuraBoxControl.ini", "favorites.txt" })
+            {
+                string from = Path.Combine(old, name), to = Path.Combine(dir, name);
+                try { if (File.Exists(from) && !File.Exists(to)) { Directory.CreateDirectory(dir); File.Move(from, to); } }
+                catch (Exception) { }   // read-only folder: Load falls back below
+            }
+        }
+
         public static Settings Load()
         {
             var s = new Settings();
-            string path = File.Exists(PrimaryPath) ? PrimaryPath : FallbackPath;
+            MoveOldFiles();
+            string legacy = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "AuraBoxControl.ini");
+            string path = File.Exists(PrimaryPath) ? PrimaryPath : File.Exists(legacy) ? legacy : FallbackPath;
             return File.Exists(path) ? FromLines(File.ReadAllLines(path)) : s;
         }
 
@@ -821,7 +836,7 @@ namespace AuraBoxControl
         public void Save()
         {
             string text = Text();
-            try { File.WriteAllText(PrimaryPath, text); }
+            try { Directory.CreateDirectory(Path.GetDirectoryName(PrimaryPath)); File.WriteAllText(PrimaryPath, text); }
             catch (Exception)
             {
                 try { Directory.CreateDirectory(Path.GetDirectoryName(FallbackPath)); File.WriteAllText(FallbackPath, text); }

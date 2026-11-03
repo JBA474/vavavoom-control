@@ -2243,7 +2243,7 @@ namespace AuraBoxControl
             var backup = NewCard("Backup and Restore", 0, 306, W, 72);
             backup.Controls.Add(Btn("Export Settings...", 12, 34, 162, delegate { ExportSettings(); }));
             backup.Controls.Add(Btn("Import Settings...", 182, 34, 162, delegate { ImportSettings(); }));
-            backup.Controls.Add(Note("Settings and favorites are saved next to the program.\r\nExport puts them, with the playlist, in one file.", 360, 32));
+            backup.Controls.Add(Note("Settings and favorites are in the settings folder next\r\nto the program. Export puts them, with the playlist, in one file.", 360, 32));
             p.Controls.Add(backup);
 
             var about = NewCard("About", 0, 388, W, 124);

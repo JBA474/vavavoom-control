@@ -56,13 +56,14 @@ tools\build.cmd
 ```
 
 This produces `AuraBoxControl.exe` in this folder. It's portable: settings (`AuraBoxControl.ini`) and favorites
-(`favorites.txt`) are saved next to it.
+(`favorites.txt`) are saved in a `settings` folder next to it, created on first run.
 
 | Folder | What's in it |
 |---|---|
-| `src/` | The C# source, the app icon, and the design lists built into the exe |
+| `src/` | The C# source, the app icon, the design lists built into the exe, and the license |
 | `tools/` | `build.cmd`, and the scripts that make the icon and the design lists |
 | `docs/` | Screenshots for this README |
+| `settings/` | Your settings and favorites (made by the app, not committed) |
 | `dist/` | Release downloads (not committed) |
 
 ### Optional: Divoom's built-in designs
@@ -112,4 +113,4 @@ The cloud gallery uses Divoom's public gallery server, which may change or go aw
 
 ## License
 
-[MIT](LICENSE)
+[MIT](src/LICENSE)
