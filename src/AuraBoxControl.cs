@@ -756,7 +756,7 @@ namespace AuraBoxControl
         public int TextColor = 7, TextSpeed = 5;
 
         // animations that start faster than DefaultSpeed until a speed is picked for them on the Animations page
-        static readonly Dictionary<string, int> StartSpeeds = new Dictionary<string, int> { { "blocks", 8 } };
+        static readonly Dictionary<string, int> StartSpeeds = new Dictionary<string, int> { { "blocks", 8 }, { "fire", 8 }, { "bricks", 8 } };
 
         public int SpeedOf(string id)
         {

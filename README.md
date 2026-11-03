@@ -19,7 +19,7 @@ that keeps going from the system tray.
   speed setting:
   - Lava Clock: lava gathers into the time, then melts into a puddle.
   - Fireplace, Lava Lamp, Hyperspace, Rain on a Window.
-  - Snake Chase, Falling Blocks, Bouncing Balls, Brick Breaker.
+  - Snake Chase, Tetris, Bouncing Balls, Brick Breaker.
   - A waving Laos flag.
 - **Create.** A drawing editor, an 8-frame animation editor, an animated GIF importer, and scrolling text in
   any Windows font.

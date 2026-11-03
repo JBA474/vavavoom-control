@@ -44,7 +44,7 @@ namespace AuraBoxControl
         static readonly LiveAnim[] LiveAnims = {
             new LiveAnim { Id = "snakes", Name = "Snake Chase", Make = () => new SnakeChase().Next,
                            About = "A long green snake and a short magenta one play tag. The red head is \"it\"." },
-            new LiveAnim { Id = "blocks", Name = "Falling Blocks", Make = () => new FallingBlocks().Next,
+            new LiveAnim { Id = "blocks", Name = "Tetris", Make = () => new FallingBlocks().Next,
                            About = "Pieces drop into place; finished rows flash and clear, forever." },
             new LiveAnim { Id = "stars", Name = "Hyperspace", Make = () => new Starfield().Next,
                            About = "Stars stream past you on all sides, stretching into streaks." },
