@@ -68,6 +68,8 @@ namespace AuraBoxControl
         static readonly int ShowMessage = RegisterWindowMessage("AuraBoxControl.ShowWindow");
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int RegisterWindowMessage(string name);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr w, IntPtr l);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr w, string l);
+        const int EM_SETCUEBANNER = 0x1501;   // gray hint text in an empty text box
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", RunName = "AuraBoxControl";
         readonly List<PlayRow> playRows = new List<PlayRow>();
 
@@ -116,7 +118,8 @@ namespace AuraBoxControl
             menu.Items.Add(new ToolStripSeparator());
             var skipMenu = menu.Items.Add("Skip to Next Item", null, delegate { if (rotateBox.Checked) { skipItem = true; status.Text = "Skipping to the next item..."; } });
             var pauseMenu = menu.Items.Add("Pause Playlist", null, delegate { rotateBox.Checked = !rotateBox.Checked; });
-            menu.Items.Add("Show Weather Now", null, delegate { ShowWeatherNow(); });
+            var showNowMenu = new ToolStripMenuItem("Show Now");   // the Now page's eight picks
+            menu.Items.Add(showNowMenu);
             menu.Items.Add("Sync Clock", null, delegate { Run(delegate { box.SetTime(); }, "Clock synced"); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Exit", null, delegate { Close(); });
@@ -124,6 +127,13 @@ namespace AuraBoxControl
             {
                 pauseMenu.Text = rotateBox.Checked ? "Pause Playlist" : "Resume Playlist";
                 skipMenu.Enabled = rotateBox.Checked;
+                showNowMenu.DropDownItems.Clear();
+                foreach (string pick in cfg.ShowNow)
+                {
+                    string id = pick;
+                    showNowMenu.DropDownItems.Add(ShowNowName(id), null, delegate { ShowNowRun(id); });
+                }
+                showNowMenu.DropDown.Renderer = menu.Renderer;
             };
             tray.ContextMenuStrip = menu;
             tray.DoubleClick += delegate { RestoreFromTray(); };
@@ -452,7 +462,7 @@ namespace AuraBoxControl
             connecting = true;
             connectBtn.Enabled = false;
             connectBtn.Text = "Connecting...";
-            status.Text = (failedTries > 0 ? "Reconnecting to " : "Connecting to ") + mac + "...";
+            status.Text = (failedTries > 0 ? "Reconnecting to AuraBox..." : "Connecting to AuraBox...");
             bool sync = syncBox.Checked;
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -693,12 +703,28 @@ namespace AuraBoxControl
             }
             quick.Controls.Add(Note("Right-click a button to choose what it shows.", 14, 122));
             p.Controls.Add(quick);
-            p.Controls.Add(Note("Notification icons are on the Original Modes page.", 2, 430));
+            // the next three playlist items, in order
+            var upNext = NewCard("Up Next", 0, 430, W, 88);
+            var nextName = new Label[3]; var nextTime = new Label[3];
+            for (int k = 0; k < 3; k++)
+            {
+                nextName[k] = new Label { Location = new Point(14 + k * 228, 38), Size = new Size(220, 22), UseMnemonic = false, AutoEllipsis = true };
+                nextTime[k] = new Label { Location = new Point(14 + k * 228, 60), Size = new Size(220, 20), Tag = "subtle", UseMnemonic = false };
+                upNext.Controls.Add(nextName[k]); upNext.Controls.Add(nextTime[k]);
+            }
+            p.Controls.Add(upNext);
 
             var tick = new System.Windows.Forms.Timer { Interval = 200 };
             tick.Tick += delegate
             {
                 if (!p.Visible) return;
+                var coming = UpNext(3);
+                for (int k = 0; k < 3; k++)
+                {
+                    bool has = coming != null && k < coming.Count;
+                    nextName[k].Text = has ? (k + 1) + ".  " + coming[k].Name : k == 0 && coming == null ? "The playlist is off." : "";
+                    nextTime[k].Text = has ? Duration(coming[k].Seconds) : k == 0 && coming == null ? "Run it to see what plays next." : "";
+                }
                 playBtn.Text = rotateBox.Checked ? "Pause Playlist" : "Run Playlist";
                 int[] img = box.LastImage; string mode = box.LastMode;
                 preview.SetAll(img ?? new int[100]);
@@ -721,6 +747,25 @@ namespace AuraBoxControl
         }
 
         volatile string showing;   // name of a manual job (live animation, clock...) for the Now page
+
+        // the turned-on playlist items that come after the one playing (wrapping around); null while the playlist is off
+        List<PlayItem> UpNext(int count)
+        {
+            if (!rotateBox.Checked) return null;
+            var on = new List<PlayItem>();
+            lock (playlistGate) foreach (var it in cfg.Playlist) if (it.On) on.Add(it);
+            var list = new List<PlayItem>();
+            if (on.Count == 0) return list;
+            int at = on.FindIndex(it => it.Id == currentItem);
+            for (int k = 1; k <= count && k <= on.Count; k++) list.Add(on[(at + k + on.Count) % on.Count]);
+            return list;
+        }
+
+        static string Duration(int seconds)
+        {
+            if (seconds < 60) return seconds + " sec";
+            return seconds / 60 + " min" + (seconds % 60 > 0 ? " " + seconds % 60 + " sec" : "");
+        }
 
         // what a Show Now button can play: the clock, the weather, a live animation, or a built-in mode
         static List<KeyValuePair<string, string>> ShowNowChoices()
@@ -851,12 +896,12 @@ namespace AuraBoxControl
         Panel BuildDrawPage()
         {
             var p = NewPage();
-            grid = new PixelGrid(36) { Location = new Point(0, 0) };
+            grid = new PixelGrid(34) { Location = new Point(0, 0) };
             grid.Changed += delegate { if (liveBox.Checked) SendImage(); };
             p.Controls.Add(grid);
 
-            var pen = NewCard("Pen", 376, 0, W - 376, 216);
-            penWheel = new ColorWheel { Location = new Point(12, 36), Size = new Size(168, 168) };
+            var pen = NewCard("Pen", 376, 0, W - 376, 206);
+            penWheel = new ColorWheel { Location = new Point(12, 36), Size = new Size(160, 160) };
             penSwatch = new Label { Location = new Point(196, 44), Size = new Size(96, 40), Tag = "swatch", BackColor = Proto.Palette[1],
                                     TextAlign = ContentAlignment.MiddleCenter };
             penWheel.Changing += delegate { SetPen(penWheel.Value); };
@@ -873,46 +918,67 @@ namespace AuraBoxControl
                 delegate { grid.SetAll(new int[100]); },
                 ImportPicture, OpenDesign, SaveDesign };
             for (int k = 0; k < labels.Length; k++)
-                p.Controls.Add(Btn(labels[k], 376 + (k % 2) * 166, 230 + (k / 2) * 38, 158, actions[k], k == 0));
-            liveBox = new CheckBox { Text = "Live update while drawing", Location = new Point(378, 350), AutoSize = true };
+                p.Controls.Add(Btn(labels[k], 376 + (k % 2) * 166, 216 + (k / 2) * 36, 158, actions[k], k == 0));
+            liveBox = new CheckBox { Text = "Live update while drawing", Location = new Point(378, 324), AutoSize = true };
             p.Controls.Add(liveBox);
 
             // the animation's frames as a strip under the editor: click to pick one, double-click to edit it
-            var strip = NewCard("Animation Frames (up to 8): click to pick, double-click to edit", 0, 380, W, 136);
+            var strip = NewCard("Animation Frames (up to 8): click to pick, double-click to edit", 0, 352, W, 164);
             for (int k = 0; k < 8; k++)
             {
                 int i = k, x = 12 + k * 58;
-                frameSlots[k] = new PixelGrid(5) { Location = new Point(x, 34), ReadOnly = true, Cursor = Cursors.Hand };
-                frameRims[k] = new Label { Location = new Point(x - 3, 31), Size = new Size(56, 56), Tag = "swatch", BackColor = Color.Transparent };
+                frameSlots[k] = new PixelGrid(5) { Location = new Point(x, 32), ReadOnly = true, Cursor = Cursors.Hand };
+                frameRims[k] = new Label { Location = new Point(x - 3, 29), Size = new Size(56, 56), Tag = "swatch", BackColor = Color.Transparent };
                 frameSlots[k].Click += delegate { if (i < frames.Count) { selFrame = i; RefreshFrames(); } };
                 frameSlots[k].DoubleClick += delegate { if (i < frames.Count) { selFrame = i; RefreshFrames(); LoadFrame(); } };
                 strip.Controls.Add(frameSlots[k]); strip.Controls.Add(frameRims[k]);   // added after, so the rim sits behind
             }
-            strip.Controls.Add(new Label { Text = "Delay:", Location = new Point(476, 40), AutoSize = true });
-            delayBox = new NumericUpDown { Minimum = 1, Maximum = 255, Value = Math.Max(1, Math.Min(255, cfg.AnimDelay)), Location = new Point(522, 37), Width = 50 };
-            delayBox.ValueChanged += delegate { cfg.AnimDelay = (int)delayBox.Value; };
-            new ToolTip().SetToolTip(delayBox, "Time between frames on the box: higher is slower");
-            strip.Controls.Add(delayBox);
-            strip.Controls.Add(Btn("Send Animation", 580, 34, 108, delegate
+            // moving a frame keeps it picked, so repeated clicks walk it along the strip
+            Action<int> move = delegate (int step)
             {
-                if (frames.Count == 0) { status.Text = "Add at least one frame first"; return; }
-                StopRotationForManual();
-                SendAnimation(frames);
-            }, true));
-            string[] labels2 = { "Add Drawing", "Replace", "Edit Frame", "Move Left", "Remove", "Clear All", "Import GIF..." };
+                int i = selFrame, j = selFrame + step;
+                if (i < 0 || i >= frames.Count || j < 0 || j >= frames.Count) return;
+                var f = frames[i]; frames[i] = frames[j]; frames[j] = f; selFrame = j; RefreshFrames();
+            };
+            string[] labels2 = { "Add Drawing", "Replace", "Edit Frame", "Remove", "◀  Move Left", "Move Right  ▶", "Clear All", "Import GIF..." };
             Action[] actions2 = {
                 delegate {
                     if (frames.Count >= 8) { MessageBox.Show(this, "The AuraBox holds at most 8 frames.", "AuraBox Control"); return; }
                     frames.Add((int[])grid.Pixels.Clone()); selFrame = frames.Count - 1; RefreshFrames(); },
                 delegate { if (selFrame >= 0 && selFrame < frames.Count) { frames[selFrame] = (int[])grid.Pixels.Clone(); RefreshFrames(); } },
                 LoadFrame,
-                delegate {
-                    int i = selFrame;
-                    if (i > 0 && i < frames.Count) { var f = frames[i]; frames.RemoveAt(i); frames.Insert(i - 1, f); selFrame = i - 1; RefreshFrames(); } },
                 delegate { if (selFrame >= 0 && selFrame < frames.Count) { frames.RemoveAt(selFrame); RefreshFrames(); } },
+                delegate { move(-1); },
+                delegate { move(1); },
                 delegate { frames.Clear(); selFrame = -1; RefreshFrames(); },
                 ImportPicture };
-            for (int k = 0; k < labels2.Length; k++) strip.Controls.Add(Btn(labels2[k], 12 + k * 96, 94, 90, actions2[k]));
+            for (int k = 0; k < labels2.Length; k++) strip.Controls.Add(Btn(labels2[k], 12 + (k % 4) * 116, 90 + (k / 4) * 36, 110, actions2[k]));
+
+            // right side: the animation playing here (no box needed), its delay, and Send
+            var animPreview = new PixelGrid(7) { Location = new Point(490, 32), ReadOnly = true };
+            strip.Controls.Add(animPreview);
+            strip.Controls.Add(new Label { Text = "Delay:", Location = new Point(574, 34), AutoSize = true });
+            delayBox = new NumericUpDown { Minimum = 1, Maximum = 255, Value = Math.Max(1, Math.Min(255, cfg.AnimDelay)), Location = new Point(574, 58), Width = 60 };
+            delayBox.ValueChanged += delegate { cfg.AnimDelay = (int)delayBox.Value; };
+            new ToolTip().SetToolTip(delayBox, "Time between frames: higher is slower. The preview on the left plays at about this speed.");
+            strip.Controls.Add(delayBox);
+            strip.Controls.Add(Btn("Send Animation", 490, 126, 198, delegate
+            {
+                if (frames.Count == 0) { status.Text = "Add at least one frame first"; return; }
+                StopRotationForManual();
+                SendAnimation(frames);
+            }, true));
+            int previewAt = 0; DateTime previewNext = DateTime.MinValue;
+            var previewTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            previewTimer.Tick += delegate
+            {
+                if (!p.Visible || DateTime.Now < previewNext) return;
+                if (frames.Count == 0) { animPreview.SetAll(new int[100]); previewNext = DateTime.Now.AddSeconds(0.5); return; }
+                previewAt = (previewAt + 1) % frames.Count;
+                animPreview.SetAll(frames[previewAt]);
+                previewNext = DateTime.Now.AddSeconds((double)delayBox.Value / 10);   // about 0.1 s per delay step
+            };
+            previewTimer.Start();
             p.Controls.Add(strip);
             RefreshFrames();
             return p;
@@ -1041,7 +1107,10 @@ namespace AuraBoxControl
             var cats = new List<string>();
             foreach (var it in items) if (!cats.Contains(it.Category)) cats.Add(it.Category);
 
-            var catBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(0, 2), Width = 280 };
+            var catBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(0, 2), Width = 250 };
+            var search = new TextBox { Location = new Point(258, 3), Width = 136 };
+            search.HandleCreated += delegate { SendMessage(search.Handle, EM_SETCUEBANNER, (IntPtr)1, "Search names"); };
+            p.Controls.Add(search);
             foreach (var c in cats) catBox.Items.Add("Built-In: " + c);
             catBox.Items.Add("My Favorites");
             foreach (var c in CloudSources) catBox.Items.Add(c);
@@ -1067,11 +1136,27 @@ namespace AuraBoxControl
             var seen = new HashSet<string>();                                 // looks already shown (built-ins included)
             foreach (var it in items) { seen.Add(Signature(it.Frames)); string n = NameKey(it.Name); if (n.Length > 0) seen.Add(n); }
 
-            Action<GalleryItem> addItem = delegate (GalleryItem it)
+            // search: the list loaded for the source (all of it, or one cloud page) is kept in pageItems,
+            // and only names containing the search text are shown
+            var pageItems = new List<GalleryItem>();
+            Func<GalleryItem, bool> matches = it =>
+                search.Text.Trim().Length == 0 || (it.Name ?? "").IndexOf(search.Text.Trim(), StringComparison.CurrentCultureIgnoreCase) >= 0;
+            Action<GalleryItem> display = delegate (GalleryItem it)
             {
                 images.Images.Add(Proto.Render(it.Frames[0], Math.Max(1, thumb / 10)));
                 view.Items.Add(new ListViewItem(it.Name, images.Images.Count - 1));
                 shown.Add(it);
+            };
+            Action<GalleryItem> addItem = delegate (GalleryItem it) { pageItems.Add(it); if (matches(it)) display(it); };
+            Action clearView = delegate { view.Items.Clear(); images.Images.Clear(); shown.Clear(); pageItems.Clear(); };
+            search.TextChanged += delegate
+            {
+                view.BeginUpdate();
+                view.Items.Clear(); images.Images.Clear(); shown.Clear();
+                foreach (var it in pageItems) if (matches(it)) display(it);
+                view.EndUpdate();
+                if (search.Text.Trim().Length > 0)
+                    status.Text = shown.Count + " of " + pageItems.Count + " match “" + search.Text.Trim() + "”" + (catBox.SelectedIndex > cats.Count ? " on this page" : "");
             };
 
             var favBtn = Btn("Add to Favorites", W - 170, 462, 170, null);
@@ -1098,7 +1183,7 @@ namespace AuraBoxControl
             load = delegate
             {
                 int gen = ++generation;
-                view.Items.Clear(); images.Images.Clear(); shown.Clear();
+                clearView();
                 int sel = catBox.SelectedIndex;
                 bool cloud = sel > cats.Count, fav = sel == cats.Count;
                 prev.Visible = next.Visible = pageLabel.Visible = cloud;
@@ -1194,7 +1279,7 @@ namespace AuraBoxControl
                             if (gen != generation) return;
                             // items appeared as they downloaded; now put the page in A-Z order
                             view.BeginUpdate();
-                            view.Items.Clear(); images.Images.Clear(); shown.Clear();
+                            clearView();
                             foreach (var it in kept) addItem(it);
                             view.EndUpdate();
                         });
@@ -1562,6 +1647,12 @@ namespace AuraBoxControl
         {
             var now = NewCard("Weather (Open-Meteo)", 0, y, W, 286);
             placeBox = new TextBox { Location = new Point(12, 34), Width = 220, Text = cfg.Place };
+            placeBox.KeyDown += delegate (object s, KeyEventArgs e)
+            {
+                if (e.KeyCode != Keys.Enter) return;
+                e.SuppressKeyPress = true;   // no "ding"
+                LookUpPlace();
+            };
             now.Controls.Add(placeBox);
             now.Controls.Add(Btn("Look Up", 240, 32, 90, LookUpPlace));
             placeLabel = new Label { Location = new Point(340, 38), AutoSize = true, Tag = "subtle" };
@@ -1787,7 +1878,7 @@ namespace AuraBoxControl
                 if (!rotateBox.Checked) { status.Text = "Start the playlist first"; return; }
                 skipItem = true;
                 status.Text = "Skipping to the next item...";
-            }, true));
+            }));   // a plain button: running the playlist is this page's main action
             p.Controls.Add(Note("Turned-on items play top to bottom, then start over. Keep the app running (tray is fine).", 2, 32));
             var onlyOn = new CheckBox { Text = "Show only turned-on items", Location = new Point(W - 190, 36), AutoSize = true, Checked = cfg.OnlyOnItems };
             onlyOn.CheckedChanged += delegate { cfg.OnlyOnItems = onlyOn.Checked; SaveSettings(); LayoutPlayRows(); };
@@ -1893,7 +1984,7 @@ namespace AuraBoxControl
             r.Up.Enabled = canUp; r.Down.Enabled = canDown;
             if (!visible) return;
             Place(r.On, 14, y + 2); Place(r.Amount, 330, y); Place(r.Unit, 402, y);
-            Place(r.Up, 560, y - 1); Place(r.Down, 600, y - 1);
+            Place(r.Up, 506, y - 1); Place(r.Down, 544, y - 1);   // right after the time, not off at the far edge
         }
 
         PlayRow RowFor(string id) { foreach (var r in playRows) if (r.Id == id) return r; return null; }
@@ -2029,31 +2120,34 @@ namespace AuraBoxControl
         {
             var p = NewPage();
             var ag = NewCard("Alarm", 0, 0, W, 130);
-            var alarmOn = new CheckBox { Text = "Alarm on", Location = new Point(14, 42), AutoSize = true, Checked = false };
-            var hour = new NumericUpDown { Minimum = 0, Maximum = 23, Value = 7, Location = new Point(120, 39), Width = 54 };
-            var minute = new NumericUpDown { Minimum = 0, Maximum = 59, Value = 0, Location = new Point(190, 39), Width = 54 };
+            // the last values sent are remembered (the box can't be asked for them)
+            var alarmOn = new CheckBox { Text = "Alarm on", Location = new Point(14, 42), AutoSize = true, Checked = cfg.AlarmOn };
+            var hour = new TwoDigitUpDown { Minimum = 0, Maximum = 23, Value = Math.Max(0, Math.Min(23, cfg.AlarmHour)), Location = new Point(120, 39), Width = 54 };
+            var minute = new TwoDigitUpDown { Minimum = 0, Maximum = 59, Value = Math.Max(0, Math.Min(59, cfg.AlarmMinute)), Location = new Point(190, 39), Width = 54 };
             ag.Controls.Add(alarmOn); ag.Controls.Add(hour); ag.Controls.Add(minute);
             ag.Controls.Add(new Label { Text = ":", Location = new Point(177, 42), AutoSize = true });
             ag.Controls.Add(Note("24-hour time", 252, 42));
-            var alarmScene = SceneBox(new Point(420, 39));
+            var alarmScene = SceneBox(new Point(420, 39), cfg.AlarmScene);
             ag.Controls.Add(new Label { Text = "Scene:", Location = new Point(366, 42), AutoSize = true }); ag.Controls.Add(alarmScene);
             ag.Controls.Add(Btn("Set Alarm", 12, 84, 130, delegate
             {
                 int h = (int)hour.Value, m = (int)minute.Value, sc = alarmScene.SelectedIndex; bool on = alarmOn.Checked;
+                cfg.AlarmHour = h; cfg.AlarmMinute = m; cfg.AlarmScene = sc; cfg.AlarmOn = on; SaveSettings();
                 Run(delegate { box.SetAlarm(h, m, sc, on); }, on ? "Alarm set for " + DateTime.Today.AddHours(h).AddMinutes(m).ToString("t") : "Alarm turned off");
             }, true));
             p.Controls.Add(ag);
 
             var sg = NewCard("Sleep Timer (Light and Sound Fade Off)", 0, 142, W, 130);
-            var sleepOn = new CheckBox { Text = "Sleep on", Location = new Point(14, 42), AutoSize = true, Checked = false };
-            var sleepMin = new NumericUpDown { Minimum = 1, Maximum = 120, Value = 30, Location = new Point(120, 39), Width = 60 };
-            var sleepScene = SceneBox(new Point(420, 39));
+            var sleepOn = new CheckBox { Text = "Sleep on", Location = new Point(14, 42), AutoSize = true, Checked = cfg.SleepOn };
+            var sleepMin = new NumericUpDown { Minimum = 1, Maximum = 120, Value = Math.Max(1, Math.Min(120, cfg.SleepMinutes)), Location = new Point(120, 39), Width = 60 };
+            var sleepScene = SceneBox(new Point(420, 39), cfg.SleepScene);
             sg.Controls.Add(sleepOn); sg.Controls.Add(sleepMin);
             sg.Controls.Add(new Label { Text = "minutes", Location = new Point(186, 42), AutoSize = true });
             sg.Controls.Add(new Label { Text = "Scene:", Location = new Point(366, 42), AutoSize = true }); sg.Controls.Add(sleepScene);
             sg.Controls.Add(Btn("Start Sleep Timer", 12, 84, 150, delegate
             {
                 int mins = (int)sleepMin.Value, sc = sleepScene.SelectedIndex; bool on = sleepOn.Checked;
+                cfg.SleepMinutes = mins; cfg.SleepScene = sc; cfg.SleepOn = on; SaveSettings();
                 Run(delegate { box.SetSleep(mins, sc, on); }, on ? "Sleep timer: " + mins + " minutes" : "Sleep timer off");
             }, true));
             p.Controls.Add(sg);
@@ -2061,11 +2155,11 @@ namespace AuraBoxControl
             return p;
         }
 
-        static ComboBox SceneBox(Point at)
+        static ComboBox SceneBox(Point at, int scene)
         {
             var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = at, Width = 120 };
             c.Items.AddRange(new object[] { "Scene 1", "Scene 2", "Scene 3", "Scene 4" });
-            c.SelectedIndex = 0;
+            c.SelectedIndex = Math.Max(0, Math.Min(3, scene));
             return c;
         }
 

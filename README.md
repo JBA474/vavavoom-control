@@ -55,8 +55,15 @@ No SDK or Visual Studio is needed. The C# compiler is part of Windows:
 build.cmd
 ```
 
-This produces `AuraBoxControl.exe`. It's portable: settings (`AuraBoxControl.ini`) and favorites
+This produces `AuraBoxControl.exe` in this folder. It's portable: settings (`AuraBoxControl.ini`) and favorites
 (`favorites.txt`) are saved next to it.
+
+| Folder | What's in it |
+|---|---|
+| `src/` | The C# source, the app icon, and the design lists built into the exe |
+| `tools/` | Scripts that make the icon and the design lists |
+| `docs/` | Screenshots for this README |
+| `dist/` | Release downloads (not committed) |
 
 ### Optional: Divoom's built-in designs
 
@@ -65,16 +72,17 @@ Divoom's artwork, so they aren't included in this repository. To add them:
 
 1. Get the AuraBox Android app's APK (`com.cheerchip.aurabox1`) and open it as a zip file.
 2. Extract `assets/prepare.db`.
-3. Run `python tools/export_gallery.py prepare.db gallery.txt`.
-4. Run `build.cmd`. It embeds `gallery.txt` whenever the file is there.
+3. Run `python tools/export_gallery.py prepare.db src/gallery.txt`.
+4. Run `build.cmd`. It embeds `src/gallery.txt` whenever the file is there.
 
 ## Tools
 
 | Script | What it does |
 |---|---|
-| `tools/export_gallery.py` | Turns the Android app's design database into `gallery.txt`. |
-| `tools/originals.py` | Prints this project's own designs. `--line` gives the lines used in `extras.txt`. |
-| `tools/weather_icons.py` | The weather icon art. `--png out.png` saves a preview, and `--cs` prints the C# table used in `AuraBoxControl.cs`. |
+| `tools/export_gallery.py` | Turns the Android app's design database into `src/gallery.txt`. |
+| `tools/originals.py` | Prints this project's own designs. `--line` gives the lines used in `src/extras.txt`. |
+| `tools/weather_icons.py` | The weather icon art. `--png out.png` saves a preview, and `--cs` prints the C# table used in `src/AuraBoxControl.cs`. |
+| `tools/make_icon.ps1` | Draws the app icon at every size Windows uses and writes `src/app.ico`. |
 
 ## Protocol notes
 

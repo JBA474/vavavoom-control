@@ -721,6 +721,9 @@ namespace AuraBoxControl
         public const int ShowNowSlots = 8;
         public static readonly string[] DefaultShowNow = { "clock", "weather", "lavaclock", "fire", "bricks", "lava", "stars", "laos" };
         public string[] ShowNow = (string[])DefaultShowNow.Clone();
+        // the alarm and sleep timer as last sent (the box can't be asked for them)
+        public int AlarmHour = 7, AlarmMinute = 0, AlarmScene = 0, SleepMinutes = 30, SleepScene = 0;
+        public bool AlarmOn = false, SleepOn = false;
 
         public int SpeedOf(string id)
         {
@@ -783,6 +786,14 @@ namespace AuraBoxControl
                 else if (k == "bounce_temp") s.BounceTemp = v != "0";
                 else if (k == "only_on_items") s.OnlyOnItems = v != "0";
                 else if (k == "audio_aux") s.AudioAux = v != "0";
+                else if (k == "alarm" || k == "sleep")   // alarm=hour:minute:scene:on, sleep=minutes:scene:on
+                {
+                    string[] f = v.Split(':'); int[] nums = new int[f.Length];
+                    bool ok = true;
+                    for (int i = 0; i < f.Length; i++) ok &= int.TryParse(f[i], out nums[i]);
+                    if (ok && k == "alarm" && f.Length == 4) { s.AlarmHour = nums[0]; s.AlarmMinute = nums[1]; s.AlarmScene = nums[2]; s.AlarmOn = nums[3] != 0; }
+                    if (ok && k == "sleep" && f.Length == 3) { s.SleepMinutes = nums[0]; s.SleepScene = nums[1]; s.SleepOn = nums[2] != 0; }
+                }
                 else if (k == "show_now")
                 {
                     string[] ids = v.Split(',');
@@ -830,6 +841,8 @@ namespace AuraBoxControl
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
                           "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
+                          "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
+                          "\r\nsleep=" + SleepMinutes + ":" + SleepScene + ":" + (SleepOn ? 1 : 0) +
                           "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\n";
             return text;
         }

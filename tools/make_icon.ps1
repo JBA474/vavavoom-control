@@ -2,7 +2,7 @@
 # size Windows asks for (16-256 px) so it stays crisp in the title bar, taskbar, tray, Task Manager and Explorer.
 #   powershell -ExecutionPolicy Bypass -File tools\make_icon.ps1 [out.ico]
 # Sizes up to 64 are stored as 32-bit bitmaps (read everywhere); 128 and 256 as PNG (the Windows Vista+ format).
-param([string]$Out = (Join-Path $PSScriptRoot '..\app.ico'))
+param([string]$Out = (Join-Path $PSScriptRoot '..\src\app.ico'))
 Add-Type -AssemblyName System.Drawing
 
 $sizes = 16, 20, 24, 32, 40, 48, 64, 128, 256

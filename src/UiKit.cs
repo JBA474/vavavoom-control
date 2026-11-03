@@ -376,6 +376,12 @@ namespace AuraBoxControl
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) { e.TextColor = Theme.Text; base.OnRenderItemText(e); }
     }
 
+    // a number box that always shows two digits ("07", "00"), for times
+    class TwoDigitUpDown : NumericUpDown
+    {
+        protected override void UpdateEditText() { Text = ((int)Value).ToString("00"); }
+    }
+
     // one entry of the clock/weather/... playlist
     class PlayItem
     {
