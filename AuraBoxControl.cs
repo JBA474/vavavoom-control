@@ -186,11 +186,16 @@ namespace AuraBoxControl
         // what the box shows now, for the app's preview: a picture, or the name of a built-in mode
         public volatile int[] LastImage;
         public volatile string LastMode;
+        volatile Action lastShow;   // repeats the last picture/mode/animation command (see Redisplay)
+
+        // put back what the box showed before something temporary covered it (a notification icon)
+        public void Redisplay() { var a = lastShow; if (a != null) a(); }
 
         public void SetMode(int m)
         {
             Send(Proto.SetMode, new[] { (byte)m });
             LastImage = null; LastMode = m >= 0 && m < Proto.ModeNames.Length ? Proto.ModeNames[m] : "Mode " + m;
+            lastShow = () => SetMode(m);
         }
         public void SetBrightness(int v) { Send(Proto.Brightness, new[] { (byte)Math.Max(0, Math.Min(255, v)) }); }
         public void SetColor(int c)
@@ -199,6 +204,7 @@ namespace AuraBoxControl
             var px = new int[100];
             for (int k = 0; k < 100; k++) px[k] = c & 7;
             LastImage = px; LastMode = null;
+            lastShow = () => SetColor(c);
         }
         public void SetTempUnit(bool fahrenheit) { Send(Proto.TempUnit, new[] { (byte)(fahrenheit ? 1 : 0) }); }
         // audio source: 0 = Bluetooth, 2 = line-in (the box refuses line-in unless a cable is in the AUX jack)
@@ -218,7 +224,9 @@ namespace AuraBoxControl
             var d = new List<byte> { 0, 10, 10, 4 };
             d.AddRange(Proto.Pack(px));
             Send(Proto.SetImage, d.ToArray());
-            LastImage = (int[])px.Clone(); LastMode = null;
+            var shown = (int[])px.Clone();
+            LastImage = shown; LastMode = null;
+            lastShow = () => ShowImage(shown);
         }
 
         public void ShowAnimation(List<int[]> frames, int delay)
@@ -230,6 +238,8 @@ namespace AuraBoxControl
                 Send(Proto.SetAnimation, d.ToArray());
             }
             if (frames.Count > 0) { LastImage = (int[])frames[0].Clone(); LastMode = null; }
+            var copy = new List<int[]>(frames);
+            lastShow = () => ShowAnimation(copy, delay);
         }
     }
 

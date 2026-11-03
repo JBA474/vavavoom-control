@@ -507,6 +507,9 @@ namespace AuraBoxControl
         // send from a background job; drops the connection on failure so EnsureConnected retries
         bool JobSend(Action a)
         {
+            // a notification icon is on the box: hold this frame until it has had its turn
+            while (DateTime.Now.Ticks < Interlocked.Read(ref holdUntilTicks) && !jobStop) Thread.Sleep(50);
+            if (jobStop) return true;   // stopping anyway; nothing to send
             if (!EnsureConnected()) { jobSendFailed = true; return false; }
             try
             {
@@ -636,7 +639,7 @@ namespace AuraBoxControl
             {
                 int code = k;
                 note.Controls.Add(Btn(Proto.NotifyNames[k], 12 + (k % 5) * 136, 40 + (k / 5) * 38, 128,
-                    delegate { Run(delegate { box.Notify(code); }, "Notification: " + Proto.NotifyNames[code]); }));
+                    delegate { FlashNotification(code); }));
             }
             p.Controls.Add(note);
 
@@ -666,6 +669,36 @@ namespace AuraBoxControl
         }
 
         volatile string showing;   // name of a manual job (live animation, clock...) for the Now page
+
+        // A notification icon needs the screen to itself: the playlist (or whatever is playing) holds its next frame
+        // for a few seconds, then the box gets back what it showed before. Its time keeps counting meanwhile.
+        const double NotifySeconds = 6;
+        long holdUntilTicks;   // background jobs don't send before this time (DateTime ticks)
+        int flashCount;
+
+        void FlashNotification(int code)
+        {
+            if (!box.Connected) { status.Text = "Not connected"; return; }
+            int mine = Interlocked.Increment(ref flashCount);
+            Interlocked.Exchange(ref holdUntilTicks, DateTime.Now.AddSeconds(NotifySeconds).Ticks);
+            string name = Proto.NotifyNames[code];
+            status.Text = "Notification: " + name + (job != null ? " (playback holds for " + NotifySeconds + " s)" : "");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    box.Notify(code);
+                    Thread.Sleep(TimeSpan.FromSeconds(NotifySeconds));
+                    if (mine == Interlocked.CompareExchange(ref flashCount, 0, 0)) box.Redisplay();   // a newer flash restores instead
+                }
+                catch (Exception e)
+                {
+                    box.Close();
+                    try { BeginInvoke((Action)delegate { SetConnected(false, "Connection lost: " + e.Message); }); }
+                    catch (InvalidOperationException) { }
+                }
+            });
+        }
 
         // play one live animation now (pauses the playlist)
         void PlayLive(string id)
@@ -711,19 +744,8 @@ namespace AuraBoxControl
                                             AutoSize = true, Tag = "subtle" });
             p.Controls.Add(colors);
 
-            var audio = NewCard("Audio Input", 356, 124, W - 356, 150);
-            var auxOn = new RadioButton { Text = "AUX (audio jack)", Location = new Point(14, 42), AutoSize = true, Checked = cfg.AudioAux };
-            var btOn = new RadioButton { Text = "Bluetooth", Location = new Point(14, 70), AutoSize = true, Checked = !cfg.AudioAux };
-            auxOn.CheckedChanged += delegate
-            {
-                bool aux = auxOn.Checked;
-                cfg.AudioAux = aux; SaveSettings();
-                if (box.Connected) Run(delegate { box.SetAudioInput(aux); }, "Audio input: " + (aux ? "AUX" : "Bluetooth"));
-            };
-            audio.Controls.Add(auxOn); audio.Controls.Add(btOn);
-            audio.Controls.Add(Note("Set on every connect. With no cable in\r\nthe jack, the box stays on Bluetooth.", 14, 102));
-            p.Controls.Add(audio);
-            p.Controls.Add(Note("Brightness is the slider at the bottom of the window,\r\nbeside the status message.", 358, 288));
+            p.Controls.Add(Note("Brightness is the slider at the bottom of the window,\r\nbeside the status message.\r\n\r\n" +
+                                "The audio input (AUX jack or Bluetooth) is on the Settings page.", 358, 130));
             return p;
         }
 
@@ -1899,8 +1921,8 @@ namespace AuraBoxControl
         Panel BuildSettingsPage()
         {
             var p = NewPage();
-            // appearance and temperature unit share one card; each row is its own radio group
-            var general = NewCard("General", 0, 0, W, 104);
+            // appearance, temperature unit and audio input share one card; each row is its own radio group
+            var general = NewCard("General", 0, 0, W, 134);
             general.Controls.Add(new Label { Text = "Appearance:", Location = new Point(14, 42), AutoSize = true });
             string[] modes = { "system", "light", "dark" };
             RadioRow(general, new[] { "Use my Windows setting", "Light", "Dark" }, new[] { 120, 310, 390 }, 40, Array.IndexOf(modes, cfg.ThemeMode),
@@ -1917,14 +1939,24 @@ namespace AuraBoxControl
                 if (box.Connected) Run(delegate { box.SetTempUnit(f); }, "Temperature unit: " + (f ? "Fahrenheit" : "Celsius"));
             });
             general.Controls.Add(Note("(weather and the box's thermometer)", 400, 72));
+
+            // sent on every connect; with no cable in the AUX jack the box stays on Bluetooth
+            general.Controls.Add(new Label { Text = "Audio input:", Location = new Point(14, 102), AutoSize = true });
+            RadioRow(general, new[] { "AUX (audio jack)", "Bluetooth" }, new[] { 120, 310 }, 100, cfg.AudioAux ? 0 : 1, delegate (int k)
+            {
+                bool aux = k == 0;
+                cfg.AudioAux = aux; SaveSettings();
+                if (box.Connected) Run(delegate { box.SetAudioInput(aux); }, "Audio input: " + (aux ? "AUX" : "Bluetooth"));
+            });
+            general.Controls.Add(Note("(AUX needs a cable in the jack)", 400, 102));
             p.Controls.Add(general);
 
-            var win = NewCard("Window and Startup", 0, 116, W, 170);
-            var trayBox = new CheckBox { Text = "Minimize to the system tray (keeps the playlist running in the background)", Location = new Point(14, 40),
+            var win = NewCard("Window and Startup", 0, 144, W, 160);
+            var trayBox = new CheckBox { Text = "Minimize to the system tray (keeps the playlist running in the background)", Location = new Point(14, 38),
                                          AutoSize = true, Checked = cfg.MinimizeToTray };
             trayBox.CheckedChanged += delegate { cfg.MinimizeToTray = trayBox.Checked; SaveSettings(); };
             win.Controls.Add(trayBox);
-            win.Controls.Add(new Label { Text = "When Windows starts:", Location = new Point(14, 74), AutoSize = true });
+            win.Controls.Add(new Label { Text = "When Windows starts:", Location = new Point(14, 68), AutoSize = true });
             string run = ReadRunValue();
             int startChoice = run.Length == 0 ? 0 : run.Contains("--tray") ? 2 : 1;
             string[] starts = { "Don't start AuraBox Control", "Open AuraBox Control",
@@ -1932,7 +1964,7 @@ namespace AuraBoxControl
             for (int k = 0; k < 3; k++)
             {
                 int choice = k;
-                var rb = new RadioButton { Text = starts[k], Location = new Point(14, 98 + k * 22), AutoSize = true, Checked = k == startChoice };
+                var rb = new RadioButton { Text = starts[k], Location = new Point(14, 90 + k * 22), AutoSize = true, Checked = k == startChoice };
                 rb.CheckedChanged += delegate
                 {
                     if (!rb.Checked) return;
@@ -1948,16 +1980,16 @@ namespace AuraBoxControl
             }
             p.Controls.Add(win);
 
-            var backup = NewCard("Backup and Restore", 0, 298, W, 80);
-            backup.Controls.Add(Btn("Export Settings...", 12, 38, 162, delegate { ExportSettings(); }));
-            backup.Controls.Add(Btn("Import Settings...", 182, 38, 162, delegate { ImportSettings(); }));
-            backup.Controls.Add(Note("One file with all settings, the playlist\r\nand your favorites.", 360, 36));
+            var backup = NewCard("Backup and Restore", 0, 314, W, 72);
+            backup.Controls.Add(Btn("Export Settings...", 12, 34, 162, delegate { ExportSettings(); }));
+            backup.Controls.Add(Btn("Import Settings...", 182, 34, 162, delegate { ImportSettings(); }));
+            backup.Controls.Add(Note("One file with all settings, the playlist\r\nand your favorites.", 360, 32));
             p.Controls.Add(backup);
 
-            var about = NewCard("About", 0, 390, W, 126);
-            about.Controls.Add(new Label { Text = "AuraBox Control — a portable app for the Divoom AuraBox over Bluetooth.", Location = new Point(14, 36), AutoSize = true });
-            about.Controls.Add(Note("Settings and favorites are saved next to the program (AuraBoxControl.ini, favorites.txt).", 14, 58));
-            about.Controls.Add(Note("This is an independent app. It is not affiliated with, endorsed by or supported by\r\nDivoom, the maker of the AuraBox.", 14, 80));
+            var about = NewCard("About", 0, 396, W, 124);
+            about.Controls.Add(new Label { Text = "AuraBox Control — a portable app for the Divoom AuraBox over Bluetooth.", Location = new Point(14, 34), AutoSize = true });
+            about.Controls.Add(Note("Settings and favorites are saved next to the program (AuraBoxControl.ini, favorites.txt).", 14, 56));
+            about.Controls.Add(Note("This is an independent app. It is not affiliated with, endorsed by or supported by\r\nDivoom, the maker of the AuraBox.", 14, 78));
             p.Controls.Add(about);
             return p;
         }
