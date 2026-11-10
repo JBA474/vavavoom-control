@@ -1,4 +1,4 @@
-# Writes app.ico: the AuraBox Control icon (a 4x4 grid of LED colors on a dark tile), drawn separately at every
+# Writes app.ico: the VaVaVoom Control icon (a 4x4 grid of LED colors on a dark tile), drawn separately at every
 # size Windows asks for (16-256 px) so it stays crisp in the title bar, taskbar, tray, Task Manager and Explorer.
 #   powershell -ExecutionPolicy Bypass -File tools\make_icon.ps1 [out.ico]
 # Sizes up to 64 are stored as 32-bit bitmaps (read everywhere); 128 and 256 as PNG (the Windows Vista+ format).

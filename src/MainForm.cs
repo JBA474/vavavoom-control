@@ -13,14 +13,62 @@ namespace AuraBoxControl
 {
     class MainForm : Form
     {
-        readonly AuraBox box = new AuraBox();
+        // One player per display: its device, its own settings and playlist, and whatever is playing on it. The window
+        // controls the selected one (sel); each background job keeps its own (threadPlayer), so it goes on sending to
+        // its display when the window switches to another. P is the player for the code running now.
+        class Player
+        {
+            public Device Box; public DeviceSettings Cfg; public string Name;
+            public Thread Job; public volatile bool JobStop, SkipItem, PlaylistOn; public Button PlayingBtn;
+            public volatile string CurrentItem, Showing, JobStatus; public DateTime CurrentEnd;
+            public long HoldUntilTicks; public int FlashCount; public bool JobSendFailed;   // see FlashNotification
+            public volatile bool Connecting; public bool UserDisconnected; public int FailedTries; public DateTime NextTry = DateTime.MaxValue;
+            public readonly object ConnectGate = new object();
+            public int Brightness = MaxBrightness;
+        }
+        readonly List<Player> players = new List<Player>();
+        Player sel;
+        [ThreadStatic] static Player threadPlayer;
+        Player P { get { return threadPlayer ?? sel; } }
+
+        // run a with P set to pl, on this thread
+        static void As(Player pl, Action a)
+        {
+            var was = threadPlayer; threadPlayer = pl;
+            try { a(); } finally { threadPlayer = was; }
+        }
+
+        // run a on the window's thread with P set to pl
+        void UiAs(Player pl, Action a)
+        {
+            if (closing) return;
+            try { BeginInvoke((Action)delegate { As(pl, a); }); }
+            catch (InvalidOperationException) { }   // the window is already gone
+        }
+
+        Device box { get { return P.Box; } }
+        DeviceSettings dcfg { get { return P.Cfg; } }
+        Thread job { get { return P.Job; } set { P.Job = value; } }
+        bool jobStop { get { return P.JobStop; } set { P.JobStop = value; } }
+        bool skipItem { get { return P.SkipItem; } set { P.SkipItem = value; } }
+        Button playingBtn { get { return P.PlayingBtn; } set { P.PlayingBtn = value; } }
+        string currentItem { get { return P.CurrentItem; } set { P.CurrentItem = value; } }
+        DateTime currentEnd { get { return P.CurrentEnd; } set { P.CurrentEnd = value; } }
+        string showing { get { return P.Showing; } set { P.Showing = value; } }   // name of a manual job (live animation, clock...) for the Now page
+        string jobStatus { get { return P.JobStatus; } set { P.JobStatus = value; } }   // last "what's playing" message from a background job
+        bool jobSendFailed { get { return P.JobSendFailed; } set { P.JobSendFailed = value; } }
+        bool connecting { get { return P.Connecting; } set { P.Connecting = value; } }
+        bool userDisconnected { get { return P.UserDisconnected; } set { P.UserDisconnected = value; } }
+        int failedTries { get { return P.FailedTries; } set { P.FailedTries = value; } }
+        DateTime nextTry { get { return P.NextTry; } set { P.NextTry = value; } }
+        bool playlistOn { get { return P.PlaylistOn; } }
         readonly Settings cfg;
         readonly List<int[]> frames = new List<int[]>();
         readonly object playlistGate = new object();
         ComboBox deviceBox; Button connectBtn; CheckBox syncBox; Label status, connDot, pageTitle;
         TrackBar bright; System.Windows.Forms.Timer brightTimer;
         PixelGrid grid; CheckBox liveBox; NumericUpDown delayBox;
-        readonly PixelGrid[] frameSlots = new PixelGrid[8]; readonly Label[] frameRims = new Label[8]; int selFrame = -1;   // animation frame strip
+        readonly PixelGrid[] frameSlots = new PixelGrid[AuraBox.MaxFrames]; readonly Label[] frameRims = new Label[AuraBox.MaxFrames]; int selFrame = -1;   // animation frame strip
         ColorWheel penWheel; Label penSwatch;
         NotifyIcon tray;
         Panel host, side;
@@ -29,67 +77,90 @@ namespace AuraBoxControl
         readonly List<Panel> pages = new List<Panel>();
 
         // background job (playlist, text or snakes): only one runs at a time
-        Thread job; volatile bool jobStop, skipItem; Button playingBtn;   // skipItem: end the current playlist item now
         CheckBox rotateBox; TextBox placeBox; Label placeLabel, weatherLabel;
         PixelGrid weatherIcon, weatherTemp;
         List<int[]> weatherFrames = new List<int[]>(); int weatherFrame;
         WeatherInfo weather; readonly object weatherGate = new object();
         TextBox textBox; ColorWheel textColor; ComboBox textFont; TrackBar textSpeed; Button textPlay;
         Button livePlay;
-        volatile string currentItem; DateTime currentEnd; string highlightedItem;   // playlist item on screen now (for the Playlist page)
+        string highlightedItem;   // playlist item highlighted on the Playlist page
         bool startHidden, started;
 
         // live animations generated on this PC, frame by frame
-        class LiveAnim { public string Id, Name, About; public Func<Func<int[]>> Make; }
+        // Make draws 10 x 10 (palette indexes); Make16, where there is one, draws 16 x 16 for the Tivoo (RGB colors)
+        class LiveAnim { public string Id, Name, About; public Func<Func<int[]>> Make, Make16; }
+
+        // a 16 x 16 animation's palette frames (Palette16) as the RGB pictures the Tivoo takes
+        static Func<int[]> Rgb16(Func<int[]> next) { return () => Palette16.ToRgb(next()); }
+
+        // the animation drawn for a display of this size: its own 16 x 16 version on a Tivoo, else the 10 x 10 one (stretched)
+        static Func<int[]> MakeFor(LiveAnim la, int size) { return size == 16 && la.Make16 != null ? la.Make16() : la.Make(); }
         static readonly LiveAnim[] LiveAnims = {
-            new LiveAnim { Id = "snakes", Name = "Snake Chase", Make = () => new SnakeChase().Next,
+            new LiveAnim { Id = "snakes", Name = "Snake Chase", Make = () => new SnakeChase().Next, Make16 = () => Rgb16(new SnakeChase(16).Next),
                            About = "A long green snake and a short magenta one play tag. The red head is \"it\"." },
-            new LiveAnim { Id = "blocks", Name = "Tetrix", Make = () => new FallingBlocks().Next,
+            new LiveAnim { Id = "blocks", Name = "Tetrix", Make = () => new FallingBlocks().Next, Make16 = () => Rgb16(new FallingBlocks(16).Next),
                            About = "Pieces drop into place; finished rows flash and clear, forever." },
-            new LiveAnim { Id = "stars", Name = "Hyperspace", Make = () => new Starfield().Next,
+            new LiveAnim { Id = "stars", Name = "Hyperspace", Make = () => new Starfield().Next, Make16 = () => Rgb16(new Starfield(16).Next),
                            About = "Stars stream past you on all sides, stretching into streaks." },
-            new LiveAnim { Id = "rain", Name = "Rain on a Window", Make = () => new RainWindow().Next,
+            new LiveAnim { Id = "rain", Name = "Rain on a Window", Make = () => new RainWindow().Next, Make16 = () => Rgb16(new RainWindow(16).Next),
                            About = "Drops slide down the glass at their own pace, sometimes clinging for a moment." },
-            new LiveAnim { Id = "fire", Name = "Fireplace", Make = () => new Fireplace().Next,
+            new LiveAnim { Id = "fire", Name = "Fireplace", Make = () => new Fireplace().Next, Make16 = () => Rgb16(new Fireplace(16).Next),
                            About = "Flickering flames rise and fade from white-hot to yellow to red." },
-            new LiveAnim { Id = "balls", Name = "Bouncing Balls", Make = () => new BouncingBalls().Next,
+            new LiveAnim { Id = "fireworks", Name = "Fireworks", Make = () => new Fireworks().Next, Make16 = () => Rgb16(new Fireworks(16).Next),
+                           About = "A 90-second show: a rocket now and then, building to a finale of bursts and one big boom." },
+            new LiveAnim { Id = "heart", Name = "Heart Monitor", Make = () => new HeartMonitor().Next, Make16 = () => Rgb16(new HeartMonitor(16).Next),
+                           About = "A heartbeat traces across the screen like a bedside monitor, with the odd skipped or extra beat and a rare flatline." },
+            new LiveAnim { Id = "balls", Name = "Bouncing Balls", Make = () => new BouncingBalls().Next, Make16 = () => Rgb16(new BouncingBalls(16).Next),
                            About = "Three balls bounce with gravity and get a fresh kick when they settle." },
-            new LiveAnim { Id = "bricks", Name = "Brick Breaker", Make = () => new BrickBreaker().Next,
+            new LiveAnim { Id = "bricks", Name = "Brick Breaker", Make = () => new BrickBreaker().Next, Make16 = () => Rgb16(new BrickBreaker(16).Next),
                            About = "A paddle keeps the ball in play and knocks out a wall of bricks. Clear it and a new wall goes up." },
-            new LiveAnim { Id = "laos", Name = "Laos Flag", Make = () => new WavingFlag(WavingFlag.Laos).Next,
+            new LiveAnim { Id = "laos", Name = "Laos Flag", Make = () => new WavingFlag(WavingFlag.Laos).Next, Make16 = () => Rgb16(new WavingFlag(WavingFlag.Laos, 16).Next),
                            About = "The flag of Laos ripples in a breeze." },
-            new LiveAnim { Id = "lava", Name = "Lava Lamp", Make = () => new LavaLamp().Next,
+            new LiveAnim { Id = "lava", Name = "Lava Lamp", Make = () => new LavaLamp().Next, Make16 = () => Rgb16(new LavaLamp(16).Next),
                            About = "Slow blobs of lava drift, merge and split with a magenta glow." },
-            new LiveAnim { Id = "lavaclock", Name = "Lava Clock", Make = () => new LavaClock(H24).Next,
+            new LiveAnim { Id = "lavaclock", Name = "Lava Clock", Make = () => new LavaClock(H24).Next, Make16 = () => Rgb16(new LavaClock(H24, 16).Next),
                            About = "Lava drifts, and at each new minute the ooze slowly gathers into the time, holds, then melts away." },
+            new LiveAnim { Id = "countdown", Name = "Countdown Timer", Make = () => new Countdown().Next, Make16 = () => Rgb16(new Countdown(16).Next),
+                           About = "Counts down a number of minutes, or to a date and time, with rolling digits and a draining bar. The last 9 seconds show big, then it bursts at zero." },
         };
 
         // single instance: a second launch asks the running copy to show itself
-        static readonly int ShowMessage = RegisterWindowMessage("AuraBoxControl.ShowWindow");
+        static readonly int ShowMessage = RegisterWindowMessage("VaVaVoomControl.ShowWindow");
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int RegisterWindowMessage(string name);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr w, IntPtr l);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr w, string l);
         const int EM_SETCUEBANNER = 0x1501;   // gray hint text in an empty text box
-        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", RunName = "AuraBoxControl";
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", RunName = "VaVaVoomControl", OldRunName = "AuraBoxControl";
         readonly List<PlayRow> playRows = new List<PlayRow>();
 
-        class PlayRow { public string Id; public CheckBox On; public NumericUpDown Amount; public ComboBox Unit; public Button Up, Down; }
+        class PlayRow { public string Id; public CheckBox On; public NumericUpDown Amount; public ComboBox Unit; public Button Up, Down; public TrackBar Speed; }
+
+        // a live animation's speed changed (on the Playlist or Animations page): the other page's slider follows
+        Action<string> speedChanged = delegate { };
 
         const int W = 700, H = 520;   // page area (logical pixels at 100% scaling)
 
         public MainForm(Settings settings, bool hidden)
         {
             cfg = settings;
+            foreach (var d in cfg.Devices) players.Add(NewPlayer(d, null));
+            sel = players[0];
             startHidden = hidden || settings.StartInTray;
-            clock24 = cfg.Clock24; LavaClock.FixedTheme = cfg.LavaTheme; LavaClock.Puddle = cfg.LavaPuddle;
+            clock24 = cfg.Clock24; LavaClock.FixedTheme = cfg.LavaTheme; LavaClock.Puddle = cfg.LavaPuddle; Countdown.Minutes = cfg.CountdownMinutes;
+            Countdown.Until = cfg.CountdownToDate ? cfg.CountdownUntil : DateTime.MinValue;
+            HeartMonitor.Speed = () => cfg.SpeedOf("heart");   // its slider sets the heart rate
+            DivoomAccount.Email = cfg.DivoomEmail; DivoomAccount.UserId = cfg.DivoomUserId; DivoomAccount.Token = cfg.DivoomToken;
+            ApplyTivooClock();
             cfg.ThermoFahrenheit = cfg.Fahrenheit;   // one unit setting now covers the weather and the box's own thermometer
             cfg.Brightness = MaxBrightness;          // every launch starts at full brightness
             for (int k = 0; k < Settings.ShowNowSlots; k++)   // a pick that no longer exists goes back to its default
                 if (!ShowNowChoices().Exists(c => c.Key == cfg.ShowNow[k])) cfg.ShowNow[k] = Settings.DefaultShowNow[k];
-            Text = "AuraBox Control";
+            Text = "VaVaVoom Control";
             Font = new Font(Theme.UiFont, 9f);
-            FormBorderStyle = FormBorderStyle.FixedSingle;
-            MaximizeBox = false;
+            FormBorderStyle = FormBorderStyle.Sizable;   // bigger shows more of the Gallery; the other pages keep their size
+            // only the close button: the window can't be resized, and with "minimize to the system tray" on, X hides it
+            // to the tray (Windows shows minimize and maximize together or not at all)
+            MaximizeBox = true; MinimizeBox = true;
             ClientSize = new Size(212 + W + 16, 52 + H + 30);
             StartPosition = FormStartPosition.CenterScreen;
             Icon = AppIcon(Size.Empty);
@@ -112,28 +183,35 @@ namespace AuraBoxControl
             AddPage("\uE713", "Settings", BuildSettingsPage());
             ShowPage(0);
 
-            tray = new NotifyIcon { Icon = AppIcon(SystemInformation.SmallIconSize), Text = "AuraBox Control", Visible = true };
+            tray = new NotifyIcon { Icon = AppIcon(SystemInformation.SmallIconSize), Text = "VaVaVoom Control", Visible = true };
+            // the tray menu acts on every display: with one, its items are listed directly; with more, each display gets
+            // its own submenu (named as at the top of the window), plus Pause All / Resume All and Sync All Clocks
             var menu = new ContextMenuStrip { ShowImageMargin = false, Renderer = new MenuRenderer() };
-            menu.Items.Add("Show", null, delegate { RestoreFromTray(); });
-            menu.Items.Add(new ToolStripSeparator());
-            var skipMenu = menu.Items.Add("Skip to Next Item", null, delegate { if (rotateBox.Checked) { skipItem = true; status.Text = "Skipping to the next item..."; } });
-            var pauseMenu = menu.Items.Add("Pause Playlist", null, delegate { rotateBox.Checked = !rotateBox.Checked; });
-            var showNowMenu = new ToolStripMenuItem("Show Now");   // the Now page's eight picks
-            menu.Items.Add(showNowMenu);
-            menu.Items.Add("Sync Clock", null, delegate { Run(delegate { box.SetTime(); }, "Clock synced"); });
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Exit", null, delegate { ExitApp(); });
             menu.Opening += delegate
             {
-                pauseMenu.Text = rotateBox.Checked ? "Pause Playlist" : "Resume Playlist";
-                skipMenu.Enabled = rotateBox.Checked;
-                showNowMenu.DropDownItems.Clear();
-                foreach (string pick in cfg.ShowNow)
+                menu.Items.Clear();
+                menu.Items.Add("Show", null, delegate { RestoreFromTray(); });
+                menu.Items.Add(new ToolStripSeparator());
+                if (players.Count == 1) AddTrayItems(menu.Items, players[0], menu.Renderer);
+                else
                 {
-                    string id = pick;
-                    showNowMenu.DropDownItems.Add(ShowNowName(id), null, delegate { ShowNowRun(id); });
+                    foreach (var pl0 in players)
+                    {
+                        var pl = pl0;
+                        var sub = new ToolStripMenuItem(pl.Name + (pl.Box.Connected ? "" : "  (not connected)") + (pl.PlaylistOn ? "  ▶" : ""));
+                        AddTrayItems(sub.DropDownItems, pl, menu.Renderer);
+                        sub.DropDown.Renderer = menu.Renderer;
+                        menu.Items.Add(sub);
+                    }
+                    bool any = players.Exists(pl => pl.PlaylistOn);
+                    menu.Items.Add(any ? "Pause All Playlists" : "Resume All Playlists", null, delegate
+                    {
+                        foreach (var pl in players) As(pl, delegate { if (playlistOn == any) SetPlaylist(!any); });
+                    });
+                    menu.Items.Add("Sync All Clocks", null, delegate { foreach (var pl in players) As(pl, delegate { Run(delegate { box.SetTime(); }, "Clock synced"); }); });
                 }
-                showNowMenu.DropDown.Renderer = menu.Renderer;
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("Exit", null, delegate { ExitApp(); });
             };
             tray.ContextMenuStrip = menu;
             tray.DoubleClick += delegate { RestoreFromTray(); };
@@ -141,20 +219,13 @@ namespace AuraBoxControl
             Resize += delegate { if (WindowState == FormWindowState.Minimized && cfg.MinimizeToTray) Hide(); };
 
             Theme.Prepare(this);
-            // back where it was last time, if that spot is still on a screen (a monitor may have been unplugged)
-            if (cfg.HasWindowPos)
-            {
-                var saved = new Rectangle(cfg.WindowX, cfg.WindowY, Width, Height);
-                foreach (var screen in Screen.AllScreens)
-                {
-                    var seen = Rectangle.Intersect(screen.WorkingArea, saved);
-                    if (seen.Width >= 200 && seen.Height >= 100) { StartPosition = FormStartPosition.Manual; Location = saved.Location; break; }
-                }
-            }
+            MinimumSize = Size;   // never smaller than the standard layout
+            ApplySavedPosition();
             prepared = true;
             Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnSystemTheme;
 
             Shown += delegate { everShown = true; Startup(); };
+            HandleCreated += delegate { if (keyHookHandle == IntPtr.Zero) HookWinArrows(); };
             VisibleChanged += delegate { if (Visible) everShown = true; };   // also when first opened from the tray
             FormClosing += delegate (object s, FormClosingEventArgs e)
             {
@@ -168,16 +239,37 @@ namespace AuraBoxControl
                     if (!toldAboutTray && cfg.ShowNotifications)
                     {
                         toldAboutTray = true;
-                        tray.ShowBalloonTip(5000, "AuraBox Control is still running", "It keeps the playlist going from the system tray. " +
-                                            "To quit, right-click the AuraBox icon and choose Exit.", ToolTipIcon.Info);
+                        tray.ShowBalloonTip(5000, "VaVaVoom Control is still running", "It keeps the playlist going from the system tray. " +
+                                            "To quit, right-click the VaVaVoom Control icon and choose Exit.", ToolTipIcon.Info);
                     }
                     return;
                 }
                 closing = true;
                 Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnSystemTheme;
                 RememberPosition();
-                StopJob(); SaveSettings(); box.Close(); tray.Visible = false;
+                foreach (var pl in players) As(pl, delegate { StopJob(); pl.Box.Close(); });
+                SaveSettings(); tray.Visible = false;
+                if (keyHookHandle != IntPtr.Zero) { UnhookWindowsHookEx(keyHookHandle); keyHookHandle = IntPtr.Zero; }
             };
+        }
+
+        // one display's tray items: skip, pause or resume its playlist, its Show Now picks, sync its clock
+        void AddTrayItems(ToolStripItemCollection items, Player pl, ToolStripRenderer renderer)
+        {
+            var skip = new ToolStripMenuItem("Skip to Next Item", null, delegate { As(pl, delegate { if (playlistOn) { skipItem = true; SetStatus("Skipping to the next item..."); } }); });
+            skip.Enabled = pl.PlaylistOn;
+            items.Add(skip);
+            items.Add(pl.PlaylistOn ? "Pause Playlist" : "Resume Playlist", null, delegate { As(pl, delegate { SetPlaylist(!playlistOn); }); });
+            var showNow = new ToolStripMenuItem("Show Now");   // the Now page's eight picks
+            foreach (string pick in cfg.ShowNow)
+            {
+                string id = pick;
+                if (id == EmptyPick) continue;   // empty buttons aren't listed in the tray menu
+                showNow.DropDownItems.Add(ShowNowName(id), null, delegate { As(pl, delegate { ShowNowRun(id); }); });
+            }
+            showNow.DropDown.Renderer = renderer;
+            items.Add(showNow);
+            items.Add("Sync Clock", null, delegate { As(pl, delegate { Run(delegate { box.SetTime(); }, "Clock synced"); }); });
         }
 
         void Startup()
@@ -185,9 +277,10 @@ namespace AuraBoxControl
             if (started) return;
             started = true;
             RefreshDevices();
-            if (deviceBox.Text.Length > 0) Connect();
+            foreach (var pl in players) if (pl.Cfg.Mac.Length > 0) As(pl, Connect);
+            if (sel.Cfg.Mac.Length == 0 && deviceBox.Text.Length > 0) Connect();
             StartReconnectTimer();
-            if (cfg.Rotate) rotateBox.Checked = true;
+            foreach (var pl in players) if (pl.Cfg.Rotate) As(pl, delegate { SetPlaylist(true); });
             ThreadPool.QueueUserWorkItem(delegate { GetWeather(false); });
             if (UpdateRepo.Length > 0) CheckForUpdates(false);   // quietly; only says something when there's a newer version
             // portable app: if it was moved, point the "start with Windows" entry at the new location
@@ -207,7 +300,7 @@ namespace AuraBoxControl
                 BeginInvoke((Action)Startup);
                 // a hidden start is easy to miss (Windows tucks new tray icons under ^), so say it's running
                 // a tray notification can't hold a link, but the whole notification is clickable
-                if (cfg.ShowNotifications) tray.ShowBalloonTip(6000, "AuraBox Control is running", "Click here to open AuraBox Control. Later, double-click the AuraBox icon in the system tray.",
+                if (cfg.ShowNotifications) tray.ShowBalloonTip(6000, "VaVaVoom Control is running", "Click here to open VaVaVoom Control. Later, double-click its icon in the system tray.",
                                     ToolTipIcon.Info);
             }
             base.SetVisibleCore(value);
@@ -223,7 +316,7 @@ namespace AuraBoxControl
 
         static string ReadRunValue()
         {
-            try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey)) return k == null ? "" : (k.GetValue(RunName) as string ?? ""); }
+            try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey)) return k == null ? "" : (k.GetValue(RunName) as string ?? k.GetValue(OldRunName) as string ?? ""); }
             catch (Exception) { return ""; }
         }
 
@@ -233,6 +326,7 @@ namespace AuraBoxControl
             {
                 if (on) k.SetValue(RunName, RunCommand(tray));
                 else if (k.GetValue(RunName) != null) k.DeleteValue(RunName);
+                if (k.GetValue(OldRunName) != null) k.DeleteValue(OldRunName);   // from before the rename
             }
         }
 
@@ -250,7 +344,72 @@ namespace AuraBoxControl
             Refresh();
         }
 
-        void RestoreFromTray() { Show(); WindowState = FormWindowState.Normal; Activate(); }
+        void RestoreFromTray()
+        {
+            if (!everShown) ApplySavedPosition();   // started hidden in the tray: Windows may have placed it since
+            Show(); WindowState = FormWindowState.Normal; Activate();
+        }
+
+        // back where it was last time, if that spot is still on a screen (a monitor may have been unplugged)
+        void ApplySavedPosition()
+        {
+            if (cfg.WindowW >= MinimumSize.Width && cfg.WindowH >= MinimumSize.Height) Size = new Size(cfg.WindowW, cfg.WindowH);
+            if (cfg.WindowMax) WindowState = FormWindowState.Maximized;
+            if (!cfg.HasWindowPos) return;
+            var saved = new Rectangle(cfg.WindowX, cfg.WindowY, Width, Height);
+            foreach (var screen in Screen.AllScreens)
+            {
+                var seen = Rectangle.Intersect(screen.WorkingArea, saved);
+                if (seen.Width >= 200 && seen.Height >= 100) { StartPosition = FormStartPosition.Manual; Location = saved.Location; return; }
+            }
+        }
+
+        // ---------- Win+Left / Win+Right: move to the next screen ----------
+        // Windows only snaps resizable windows, and this one has a fixed size, so those keys did nothing here. While this
+        // window is the active one, they move it to the next screen that way (wrapping around), keeping its spot on the
+        // screen. The keys are passed on, so Windows still sees them (and the Start menu doesn't pop up on release).
+        delegate IntPtr KeyboardHook(int code, IntPtr msg, IntPtr data);
+        [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, KeyboardHook proc, IntPtr module, uint thread);
+        [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr msg, IntPtr data);
+        [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hook);
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+        KeyboardHook keyHook;   // kept in a field so it isn't garbage-collected while Windows calls it
+        IntPtr keyHookHandle;
+
+        void HookWinArrows()
+        {
+            keyHook = delegate (int code, IntPtr msg, IntPtr data)
+            {
+                const int WM_KEYDOWN = 0x100, WM_SYSKEYDOWN = 0x104, VK_LEFT = 0x25, VK_RIGHT = 0x27;
+                if (code >= 0 && ((int)msg == WM_KEYDOWN || (int)msg == WM_SYSKEYDOWN) && IsHandleCreated && GetForegroundWindow() == Handle)
+                {
+                    int key = Marshal.ReadInt32(data);
+                    bool win = (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0;
+                    bool shift = (GetAsyncKeyState(0x10) & 0x8000) != 0;   // Win+Shift+arrows already move the window
+                    if (win && !shift && (key == VK_LEFT || key == VK_RIGHT)) BeginInvoke((Action)delegate { MoveToScreen(key == VK_LEFT ? -1 : 1); });
+                }
+                return CallNextHookEx(keyHookHandle, code, msg, data);
+            };
+            keyHookHandle = SetWindowsHookEx(13, keyHook, GetModuleHandle(null), 0);   // 13 = low-level keyboard
+        }
+
+        void MoveToScreen(int step)
+        {
+            var screens = new List<Screen>(Screen.AllScreens);
+            if (screens.Count < 2 || WindowState != FormWindowState.Normal) return;
+            screens.Sort((a, b) => a.Bounds.X != b.Bounds.X ? a.Bounds.X - b.Bounds.X : a.Bounds.Y - b.Bounds.Y);   // left to right
+            var from = Screen.FromHandle(Handle);
+            int at = screens.FindIndex(s => s.DeviceName == from.DeviceName);
+            var to = screens[((at < 0 ? 0 : at) + step + screens.Count) % screens.Count].WorkingArea;
+            var was = from.WorkingArea;
+            // the same relative spot: left edge, middle or right edge stays that way
+            double fx = was.Width > Width ? (double)(Left - was.Left) / (was.Width - Width) : 0;
+            double fy = was.Height > Height ? (double)(Top - was.Top) / (was.Height - Height) : 0;
+            fx = Math.Max(0, Math.Min(1, fx)); fy = Math.Max(0, Math.Min(1, fy));
+            Location = new Point(to.Left + (int)Math.Round(fx * Math.Max(0, to.Width - Width)), to.Top + (int)Math.Round(fy * Math.Max(0, to.Height - Height)));
+        }
 
         bool exiting, toldAboutTray;   // exiting: really quit, even with "minimize to the system tray" on
         bool everShown;                // the window has been on screen at least once (see RememberPosition)
@@ -264,6 +423,8 @@ namespace AuraBoxControl
             var at = WindowState == FormWindowState.Normal ? Location : RestoreBounds.Location;
             if (at.X <= -30000 || at.Y <= -30000) return;
             cfg.WindowX = at.X; cfg.WindowY = at.Y; cfg.HasWindowPos = true;
+            var size = WindowState == FormWindowState.Normal ? Size : RestoreBounds.Size;
+            cfg.WindowW = size.Width; cfg.WindowH = size.Height; cfg.WindowMax = WindowState == FormWindowState.Maximized;
         }
 
 // app.ico (made by tools\make_icon.ps1) holds every size from 16 to 256 px. It is the exe's own icon
@@ -282,6 +443,7 @@ namespace AuraBoxControl
 
         void SetStatus(string s)
         {
+            if (P != sel) s = P.Name + ": " + s;
             if (!InvokeRequired) { status.Text = s; return; }
             if (closing) return;
             try { BeginInvoke((Action)delegate { status.Text = s; }); }
@@ -291,62 +453,83 @@ namespace AuraBoxControl
         // ---------- window chrome: sidebar, header, page host, status bar ----------
         void BuildChrome()
         {
-            side = new Panel { Location = new Point(0, 0), Size = new Size(204, 52 + H + 30), Tag = "sidebar" };
-            side.Controls.Add(new Label { Text = "AuraBox", Location = new Point(18, 14), AutoSize = true, Font = Theme.Semibold(14f) });
+            side = new Panel { Location = new Point(0, 0), Size = new Size(204, 52 + H + 30), Tag = "sidebar", Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left };
+            side.Controls.Add(new Label { Text = "VaVaVoom", Location = new Point(18, 14), AutoSize = true, Font = Theme.Semibold(14f) });
             Controls.Add(side);
 
             pageTitle = new Label { Location = new Point(212, 12), AutoSize = true, Font = Theme.Semibold(16f), UseMnemonic = false };
             Controls.Add(pageTitle);
             connDot = new Label { Text = "●", Location = new Point(212 + W - 440, 17), AutoSize = true, Tag = "dot", ForeColor = Color.Gray };
             Controls.Add(connDot);
+            connDot.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             deviceBox = new ComboBox { Location = new Point(212 + W - 422, 14), Width = 250 };
+            deviceBox.SelectionChangeCommitted += delegate
+            {
+                string mac;
+                if (deviceBox.SelectedItem != null && SelectedAddress((string)deviceBox.SelectedItem, out mac) != 0) SelectDevice(mac, (string)deviceBox.SelectedItem);
+            };
             Controls.Add(deviceBox);
+            deviceBox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             var refresh = new Button { Text = "", Font = new Font(Theme.IconFont, 9f), Location = new Point(212 + W - 168, 13), Size = new Size(32, 26) };
             refresh.Click += delegate { RefreshDevices(); };
             Controls.Add(refresh);
+            refresh.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             connectBtn = new Button { Text = "Connect", Location = new Point(212 + W - 130, 13), Size = new Size(130, 26), Tag = "primary" };
             connectBtn.Click += delegate
             {
                 // Disconnect stays disconnected (no automatic retries) until Connect is pressed again
                 if (box.Connected) { userDisconnected = true; box.Close(); SetConnected(false, null); }
-                else { userDisconnected = false; failedTries = 0; Connect(); }
+                else
+                {
+                    string mac;
+                    ulong typed = SelectedAddress(out mac);   // a device picked or typed in the list that isn't the current one
+                    if (typed != 0 && mac != dcfg.Mac && dcfg.Mac.Length > 0) { SelectDevice(mac, deviceBox.Text); return; }
+                    userDisconnected = false; failedTries = 0; Connect();
+                }
             };
             Controls.Add(connectBtn);
+            connectBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
 
-            host = new Panel { Location = new Point(212, 52), Size = new Size(W, H) };
+            host = new Panel { Location = new Point(212, 52), Size = new Size(W, H), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
             Controls.Add(host);
             // status bar: the last message, brightness (from every page), the playlist state, and Resume / Stop
             status = new Label { Location = new Point(212, 52 + H + 4), Size = new Size(186, 22), Text = "Not connected", Tag = "subtle",
                                  TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false };
             Controls.Add(status);
+            status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             var sun = new Label { Text = "", Font = new Font(Theme.IconFont, 10f), Location = new Point(212 + 192, 52 + H + 6), AutoSize = true, Tag = "subtle" };
             Controls.Add(sun);
+            sun.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             bright = new TrackBar { Minimum = 0, Maximum = 255, TickStyle = TickStyle.None, AutoSize = false, Value = Math.Max(0, Math.Min(255, cfg.Brightness)),
                                     Location = new Point(212 + 212, 52 + H + 2), Size = new Size(110, 26) };
             brightTimer = new System.Windows.Forms.Timer { Interval = 250 };
             brightTimer.Tick += delegate { brightTimer.Stop(); SendBrightness(); };
             bright.ValueChanged += delegate { brightTimer.Stop(); brightTimer.Start(); };
             Controls.Add(bright);
+            bright.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             var tips = new ToolTip();
             tips.SetToolTip(bright, "Brightness"); tips.SetToolTip(sun, "Brightness");
             playState = new Label { Location = new Point(212 + 328, 52 + H + 4), Size = new Size(W - 328 - 174, 22), Tag = "accent",
                                     TextAlign = ContentAlignment.MiddleRight, AutoEllipsis = true, UseMnemonic = false, Font = Theme.Semibold(9f) };
             Controls.Add(playState);
-            resumeBtn = Btn("▶  Resume", 212 + W - 168, 52 + H + 1, 82, delegate { rotateBox.Checked = true; }, true);
+            playState.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+            resumeBtn = Btn("▶  Resume", 212 + W - 168, 52 + H + 1, 82, delegate { SetPlaylist(true); }, true);
             resumeBtn.Height = 26; resumeBtn.Visible = false;
             Controls.Add(resumeBtn);
+            resumeBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             var stateTimer = new System.Windows.Forms.Timer { Interval = 500 };
-            stateTimer.Tick += delegate { UpdatePlayState(); };
+            stateTimer.Tick += delegate { UpdatePlayState(); stopBtn.Visible = sel.Job != null; };   // Stop is for the selected display
             stateTimer.Start();
             // stops whatever is playing from this PC (playlist, text, live animations, imported GIFs)
             stopBtn = Btn("\u25A0  Stop", 212 + W - 82, 52 + H + 1, 82, delegate
             {
-                if (rotateBox.Checked) rotateBox.Checked = false; else StopJob();
+                if (playlistOn) SetPlaylist(false); else StopJob();
                 status.Text = "Stopped";
             });
             stopBtn.Visible = false;
             stopBtn.Height = 26;
             Controls.Add(stopBtn);
+            stopBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         }
 
         Label playState; Button resumeBtn;
@@ -356,15 +539,15 @@ namespace AuraBoxControl
         {
             string id = currentItem;
             PlayItem cur = null;
-            lock (playlistGate) if (id != null) cur = PlayItem.Find(cfg.Playlist, id);
+            lock (playlistGate) if (id != null) cur = PlayItem.Find(dcfg.Playlist, id);
             if (cur != null)
             {
                 var left = currentEnd - DateTime.Now;
                 if (left < TimeSpan.Zero) left = TimeSpan.Zero;
                 return cur.Name + "  ·  " + (int)left.TotalMinutes + ":" + left.Seconds.ToString("00") + " left";
             }
-            if (rotateBox.Checked) return "Playlist starting...";
-            if (cfg.Rotate) return "Playlist paused";
+            if (playlistOn) return "Playlist starting...";
+            if (dcfg.Rotate) return "Playlist paused";
             return "Playlist off";
         }
 
@@ -372,7 +555,7 @@ namespace AuraBoxControl
         {
             if (rotateBox == null) return;
             playState.Text = PlayStateText();
-            resumeBtn.Visible = !rotateBox.Checked && cfg.Rotate;   // paused for something manual: offer to pick it back up
+            resumeBtn.Visible = !playlistOn && dcfg.Rotate;   // paused for something manual: offer to pick it back up
         }
 
         int navY = 50;   // where the next sidebar entry goes
@@ -390,6 +573,7 @@ namespace AuraBoxControl
         {
             int index = pages.Count;
             page.Location = Point.Empty; page.Size = new Size(W, H); page.Visible = false; page.Tag = title;
+            page.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             host.Controls.Add(page);
             pages.Add(page);
             var b = new NavButton { Glyph = glyph, Text = title, Location = new Point(8, navY), Size = new Size(188, 34) };
@@ -405,7 +589,7 @@ namespace AuraBoxControl
             pageTitle.Text = (string)pages[index].Tag;
         }
 
-        static Panel NewPage() { return new Panel(); }
+        static Panel NewPage() { return new Panel { Size = new Size(W, H) }; }   // full size from the start, so anchored controls keep their places
 
         static Card NewCard(string title, int x, int y, int w, int h) { return new Card { Text = title, Location = new Point(x, y), Size = new Size(w, h) }; }
 
@@ -471,12 +655,12 @@ namespace AuraBoxControl
             {
                 string item = DeviceName(d.Key) + "  (" + PairedDevices.Mac(d.Value) + ")";
                 deviceBox.Items.Add(item);
-                if (pick == null && d.Key.IndexOf("AuraBox", StringComparison.OrdinalIgnoreCase) >= 0) pick = item;
-                if (cfg.Mac.Length > 0 && item.Contains(cfg.Mac)) pick = item;
+                if (pick == null && dcfg.Mac.Length == 0 && d.Key.IndexOf("AuraBox", StringComparison.OrdinalIgnoreCase) >= 0) pick = item;
+                if (dcfg.Mac.Length > 0 && item.Contains(dcfg.Mac)) pick = item;
             }
             if (pick != null) deviceBox.Text = pick;
             else if (current.Length > 0) deviceBox.Text = current;
-            else if (cfg.Mac.Length > 0) deviceBox.Text = cfg.Mac;
+            else if (dcfg.Mac.Length > 0) deviceBox.Text = dcfg.Mac;
             if (deviceBox.Text.Length == 0)
                 status.Text = "No AuraBox paired. Pair \"AuraBox-audio\" in Windows Bluetooth settings (PIN 0000 if asked), then press refresh.";
         }
@@ -489,9 +673,10 @@ namespace AuraBoxControl
             return name;
         }
 
-        ulong SelectedAddress(out string mac)
+        ulong SelectedAddress(out string mac) { return SelectedAddress(deviceBox.Text, out mac); }
+
+        static ulong SelectedAddress(string t, out string mac)
         {
-            string t = deviceBox.Text;
             int open = t.LastIndexOf('('), close = t.LastIndexOf(')');
             mac = open >= 0 && close > open ? t.Substring(open + 1, close - open - 1) : t.Trim();
             ulong a;
@@ -501,57 +686,68 @@ namespace AuraBoxControl
         void Connect()
         {
             if (connecting) return;
-            string mac;
-            ulong addr = SelectedAddress(out mac);
-            if (addr == 0) { status.Text = "Pick a paired AuraBox or type its MAC address (AA:BB:CC:DD:EE:FF)."; return; }
+            string mac = dcfg.Mac;
+            ulong addr;
+            if (!PairedDevices.TryParseMac(mac, out addr)) addr = P == sel ? SelectedAddress(out mac) : 0;
+            if (addr == 0) { status.Text = "Pick a paired display or type its MAC address (AA:BB:CC:DD:EE:FF)."; return; }
             connecting = true;
-            connectBtn.Enabled = false;
-            connectBtn.Text = "Connecting...";
-            status.Text = (failedTries > 0 ? "Reconnecting to AuraBox..." : "Connecting to AuraBox...");
+            if (P == sel)
+            {
+                connectBtn.Enabled = false;
+                connectBtn.Text = "Connecting...";
+            }
+            SetStatus((failedTries > 0 ? "Reconnecting to " : "Connecting to ") + P.Name + "...");
             bool sync = syncBox.Checked;
+            var pl = P;
             ThreadPool.QueueUserWorkItem(delegate
             {
-                try
+                As(pl, delegate
                 {
-                    ConnectNow(addr, mac, sync);
-                    BeginInvoke((Action)delegate { connecting = false; SetConnected(true, null); });
-                }
-                catch (Exception e) { BeginInvoke((Action)delegate { connecting = false; SetConnected(false, e.Message); }); }
+                    try
+                    {
+                        ConnectNow(addr, mac, sync);
+                        UiAs(pl, delegate { connecting = false; SetConnected(true, null); });
+                    }
+                    catch (Exception e) { UiAs(pl, delegate { connecting = false; SetConnected(false, e.Message); }); }
+                });
             });
         }
 
         // Keeps trying to reach the box after a failed or lost connection (also right after launch), unless the
         // Disconnect button was used. Waits a little longer after each failure, up to a minute between tries.
-        volatile bool connecting;
-        bool userDisconnected;
-        int failedTries;
-        DateTime nextTry = DateTime.MaxValue;
-        readonly object connectGate = new object();
 
         void StartReconnectTimer()
         {
             var t = new System.Windows.Forms.Timer { Interval = 1000 };
             t.Tick += delegate
             {
-                if (box.Connected || connecting || userDisconnected || DateTime.Now < nextTry) return;
-                if (job != null) return;   // a running job reconnects on its own
-                if (deviceBox.Text.Length == 0) RefreshDevices();
-                if (deviceBox.Text.Length > 0) Connect();
+                foreach (var pl in players)
+                    As(pl, delegate
+                    {
+                        if (box.Connected || connecting || userDisconnected || DateTime.Now < nextTry) return;
+                        if (job != null) return;   // a running job reconnects on its own
+                        if (dcfg.Mac.Length > 0) Connect();
+                        else if (pl == sel)
+                        {
+                            if (deviceBox.Text.Length == 0) RefreshDevices();
+                            if (deviceBox.Text.Length > 0) Connect();
+                        }
+                    });
             };
             t.Start();
         }
 
         void ConnectNow(ulong addr, string mac, bool sync)
         {
-            lock (connectGate)   // the reconnect timer and a background job may try at the same moment
+            lock (P.ConnectGate)   // the reconnect timer and a background job may try at the same moment
             {
                 if (box.Connected) return;
-                int ch = box.Connect(addr, cfg.Channel);
-                cfg.Mac = mac; cfg.Channel = ch;
+                int ch = box.Connect(addr, dcfg.Channel);
+                dcfg.Mac = mac; dcfg.Channel = ch;
                 if (sync) box.SetTime();
                 box.SetTempUnit(cfg.ThermoFahrenheit);   // the box's own thermometer follows the saved unit
                 box.SetAudioInput(cfg.AudioAux);         // the box ignores AUX when no cable is plugged in
-                box.SetBrightness(cfg.Brightness);
+                box.SetBrightness(P.Brightness);
             }
         }
 
@@ -560,47 +756,110 @@ namespace AuraBoxControl
         {
             if (box.Connected) return true;
             ulong a;
-            if (!PairedDevices.TryParseMac(cfg.Mac, out a)) return false;
+            if (!PairedDevices.TryParseMac(dcfg.Mac, out a)) return false;
             try
             {
-                ConnectNow(a, cfg.Mac, true);
-                BeginInvoke((Action)delegate { SetConnected(true, null); });
+                ConnectNow(a, dcfg.Mac, true);
+                UiAs(P, delegate { SetConnected(true, null); });
                 return true;
             }
             catch (Exception) { return false; }
         }
 
+        // a connection to P's display opened or closed (on the window's thread)
         void SetConnected(bool ok, string err)
         {
-            connectBtn.Enabled = true;
-            connectBtn.Text = ok ? "Disconnect" : "Connect";
-            connDot.ForeColor = ok ? Color.FromArgb(16, 185, 80) : Color.Gray;
+            if (P == sel) ShowConnection();
             if (ok)
             {
                 failedTries = 0; nextTry = DateTime.MaxValue;
-                status.Text = "Connected to AuraBox";   // the address is in the device list
+                SetStatus("Connected to " + P.Name);   // the address is in the device list
                 SaveSettings();
                 return;
             }
-            if (err == null) { status.Text = "Disconnected"; return; }
+            if (err == null) { SetStatus("Disconnected"); return; }
             // try again soon: 10 s, 20 s, 30 s... then once a minute
             int wait = Math.Min(60, 10 * (failedTries + 1));
             failedTries++;
             nextTry = DateTime.Now.AddSeconds(wait);
-            status.Text = err + "  (Is the AuraBox on and not connected to a phone?) Retrying in " + wait + " s.";
+            SetStatus(err + "  (Is the " + P.Name + " on and not connected to a phone?) Retrying in " + wait + " s.");
+        }
+
+        // the header shows the selected display's connection
+        void ShowConnection()
+        {
+            bool ok = sel.Box.Connected;
+            connectBtn.Enabled = !sel.Connecting;
+            connectBtn.Text = sel.Connecting ? "Connecting..." : ok ? "Disconnect" : "Connect";
+            connDot.ForeColor = ok ? Color.FromArgb(16, 185, 80) : Color.Gray;
+        }
+
+        Player NewPlayer(DeviceSettings d, string pairedName)
+        {
+            return new Player { Cfg = d, Box = Device.Create(d.Kind), Name = pairedName != null ? DeviceName(pairedName) : PairedName(d.Mac, d.Kind) };
+        }
+
+        // the display's name as paired in Windows ("Tivoo"), or its kind while it isn't paired
+        static string PairedName(string mac, string kind)
+        {
+            foreach (var d in PairedDevices.List()) if (PairedDevices.Mac(d.Value) == mac) return DeviceName(d.Key);
+            return kind == "tivoo" ? "Tivoo" : "AuraBox";
+        }
+
+        // switch the window to a display, adding it the first time (it gets its own settings and playlist)
+        void SelectDevice(string mac, string listItem)
+        {
+            var pl = players.Find(x => x.Cfg.Mac == mac);
+            if (pl == null)
+            {
+                int open = listItem.LastIndexOf("  (");
+                string name = open > 0 ? listItem.Substring(0, open) : listItem;
+                if (players.Count == 1 && players[0].Cfg.Mac.Length == 0) pl = players[0];   // the first display ever picked
+                else
+                {
+                    var d = new DeviceSettings();
+                    cfg.Devices.Add(d);
+                    pl = new Player { Cfg = d };
+                    players.Add(pl);
+                }
+                pl.Cfg.Mac = mac; pl.Cfg.Kind = Device.KindOf(name);
+                pl.Box = Device.Create(pl.Cfg.Kind); pl.Name = DeviceName(name);
+                SaveSettings();
+            }
+            SelectPlayer(pl);
+            if (!pl.Box.Connected && !pl.Connecting) { pl.UserDisconnected = false; pl.FailedTries = 0; As(pl, Connect); }
+        }
+
+        void SelectPlayer(Player pl)
+        {
+            sel = pl;
+            RefreshDevices();
+            ShowConnection();
+            ShowRotate();
+            RefreshPlayRows(); LayoutPlayRows();
+            highlightedItem = "";
+            if (bright.Value != pl.Brightness) { bright.Value = pl.Brightness; brightTimer.Stop(); }
+            if (nowCard != null) nowCard.Text = "On the " + pl.Name;
+            if (gallerySend != null) gallerySend.Text = "Send to " + pl.Name;
+            deviceChanged();
+            status.Text = "Controlling the " + pl.Name + (pl.Box.Connected ? "" : " (not connected)");
         }
 
         void Run(Action a, string done)
         {
             if (!box.Connected) { status.Text = "Not connected"; return; }
+            var pl = P;
             ThreadPool.QueueUserWorkItem(delegate
             {
-                try { a(); SetStatus(done); }
-                catch (Exception e)
+                As(pl, delegate
                 {
-                    box.Close();
-                    BeginInvoke((Action)delegate { SetConnected(false, "Connection lost: " + e.Message); });
-                }
+                    try { a(); SetStatus(done); }
+                    catch (Exception e)
+                    {
+                        box.Close();
+                        UiAs(pl, delegate { SetConnected(false, "Connection lost: " + e.Message); });
+                    }
+                });
             });
         }
 
@@ -608,7 +867,7 @@ namespace AuraBoxControl
         bool JobSend(Action a)
         {
             // a notification icon is on the box: hold this frame until it has had its turn
-            while (DateTime.Now.Ticks < Interlocked.Read(ref holdUntilTicks) && !jobStop) Thread.Sleep(50);
+            while (DateTime.Now.Ticks < Interlocked.Read(ref P.HoldUntilTicks) && !jobStop) Thread.Sleep(50);
             if (jobStop) return true;   // stopping anyway; nothing to send
             if (!EnsureConnected()) { jobSendFailed = true; return false; }
             try
@@ -621,12 +880,11 @@ namespace AuraBoxControl
             catch (Exception)
             {
                 jobSendFailed = true;
-                box.Close(); BeginInvoke((Action)delegate { SetConnected(false, "Connection lost — retrying"); });
+                box.Close(); UiAs(P, delegate { SetConnected(false, "Connection lost — retrying"); });
                 return false;
             }
         }
 
-        bool jobSendFailed; volatile string jobStatus;   // last "what's playing" message from a background job
 
         // ---------- background jobs ----------
         void StartJob(ThreadStart body, Button playButton = null)
@@ -635,7 +893,8 @@ namespace AuraBoxControl
             jobStop = false;
             playingBtn = playButton;
             if (playButton != null) playButton.Text = "Stop";
-            job = new Thread(body) { IsBackground = true };
+            var pl = P;
+            job = new Thread(delegate () { threadPlayer = pl; body(); }) { IsBackground = true };
             job.Start();
             stopBtn.Visible = true;
         }
@@ -679,7 +938,7 @@ namespace AuraBoxControl
         void StopRotationForManual()
         {
             if (job == null) return;
-            if (rotateBox.Checked) PausePlaylist(); else StopJob();
+            if (playlistOn) PausePlaylist(); else StopJob();
             status.Text = "Playlist paused for manual control";
         }
 
@@ -687,10 +946,33 @@ namespace AuraBoxControl
         // the playlist on, so it starts again the next time the app opens. Only unchecking "Run the playlist",
         // Pause in the tray menu or the Stop button turn it off for good.
         bool manualPause;
+
+        // turn the playlist of P's display on or off
+        void SetPlaylist(bool on)
+        {
+            var pl = P;
+            if (on == pl.PlaylistOn) { ShowRotate(); return; }
+            pl.PlaylistOn = on;
+            if (!manualPause) pl.Cfg.Rotate = on;   // remembered across restarts (and rebuilds: it lives in the .ini)
+            if (on) { StartJob(delegate { PlaylistLoop(null, true); }); SetStatus("Playlist running"); }
+            else { StopJob(); SetStatus("Playlist stopped"); }
+            SaveSettings();
+            ShowRotate();
+        }
+
+        // the Playlist page's checkbox follows the selected display
+        bool syncingRotate;
+        void ShowRotate()
+        {
+            if (rotateBox == null || rotateBox.Checked == sel.PlaylistOn) return;
+            syncingRotate = true;
+            try { rotateBox.Checked = sel.PlaylistOn; } finally { syncingRotate = false; }
+        }
+
         void PausePlaylist()
         {
             manualPause = true;
-            try { rotateBox.Checked = false; }
+            try { SetPlaylist(false); }
             finally { manualPause = false; }
         }
 
@@ -698,27 +980,29 @@ namespace AuraBoxControl
         void TogglePlay(Button btn, ThreadStart body, string what)
         {
             if (job != null && playingBtn == btn) { StopJob(); status.Text = what + " stopped"; return; }
-            if (rotateBox.Checked) PausePlaylist();
+            if (playlistOn) PausePlaylist();
             StartJob(body, btn);
             showing = what;
             status.Text = what + " playing";
         }
 
+        Card nowCard;
+
         // ---------- now: what's on the box, playlist controls, quick picks ----------
         Panel BuildNowPage()
         {
             var p = NewPage();
-            var card = NewCard("On the AuraBox", 0, 0, W, 252);
+            var card = nowCard = NewCard("On the " + sel.Name, 0, 0, W, 252);
             var preview = new PixelGrid(18) { Location = new Point(14, 40), ReadOnly = true };
             card.Controls.Add(preview);
             var what = new Label { Location = new Point(222, 36), Size = new Size(W - 236, 34), Font = Theme.Semibold(15f), UseMnemonic = false, AutoEllipsis = true };
             var detail = new Label { Location = new Point(224, 72), Size = new Size(W - 236, 22), Tag = "subtle", UseMnemonic = false, AutoEllipsis = true };
             card.Controls.Add(what); card.Controls.Add(detail);
-            var playBtn = Btn("Run Playlist", 222, 100, 150, delegate { rotateBox.Checked = !rotateBox.Checked; }, true);
+            var playBtn = Btn("Run Playlist", 222, 100, 150, delegate { SetPlaylist(!playlistOn); }, true);
             card.Controls.Add(playBtn);
             card.Controls.Add(Btn("Skip to Next Item  ›", 380, 100, 170, delegate
             {
-                if (!rotateBox.Checked) { status.Text = "Start the playlist first"; return; }
+                if (!playlistOn) { status.Text = "Start the playlist first"; return; }
                 skipItem = true; status.Text = "Skipping to the next item...";
             }));
             card.Controls.Add(Note("Pausing here turns the playlist off until you run it again.", 224, 136));
@@ -759,10 +1043,57 @@ namespace AuraBoxControl
             quick.Controls.Add(Note("Right-click a button to choose what it shows.", 14, 122));
             p.Controls.Add(quick);
 
+            // the other displays at a glance: what each shows, its playlist button, and Switch to make it the one above
+            var others = NewCard("Other Displays", 0, 430, W, 88);
+            p.Controls.Add(others);
+            var otherRows = new List<KeyValuePair<Player, Control[]>>();
+            Action buildOthers = delegate
+            {
+                others.Controls.Clear(); otherRows.Clear();
+                int x = 12;
+                foreach (var pl0 in players)
+                {
+                    if (pl0 == sel) continue;
+                    var pl = pl0;
+                    var pv = new PixelGrid(4) { Location = new Point(x, 34), ReadOnly = true };
+                    var nm = new Label { Location = new Point(x + 50, 32), Size = new Size(170, 20), Font = Theme.Semibold(9f), UseMnemonic = false, AutoEllipsis = true };
+                    var wh = new Label { Location = new Point(x + 50, 52), Size = new Size(170, 20), Tag = "subtle", UseMnemonic = false, AutoEllipsis = true };
+                    var run = Btn("Run Playlist", x + 224, 30, 104, delegate { As(pl, delegate { SetPlaylist(!playlistOn); }); });
+                    var sw = Btn("Switch", x + 224, 58, 104, delegate { SelectPlayer(pl); });
+                    sw.Height = 24; run.Height = 26;
+                    foreach (Control c in new Control[] { pv, nm, wh, run, sw }) others.Controls.Add(c);
+                    if (prepared) foreach (Control c in new Control[] { pv, nm, wh, run, sw }) c.Scale(new SizeF(Theme.Scale, Theme.Scale));
+                    otherRows.Add(new KeyValuePair<Player, Control[]>(pl, new Control[] { pv, nm, wh, run }));
+                    x += 344;
+                    if (x > W - 300) break;   // room for two
+                }
+                if (otherRows.Count == 0)
+                {
+                    var none = Note("Only one display so far. Pick another paired display at the top right to add it.", 14, 40);
+                    others.Controls.Add(none);
+                    if (prepared) none.Scale(new SizeF(Theme.Scale, Theme.Scale));
+                }
+                Theme.Apply(others);
+            };
+            buildOthers();
+            deviceChanged += delegate { buildOthers(); };
+
             var tick = new System.Windows.Forms.Timer { Interval = 200 };
             tick.Tick += delegate
             {
                 if (!p.Visible) return;
+                if (otherRows.Count != Math.Min(2, players.Count - 1)) buildOthers();   // a display was added
+                foreach (var row in otherRows)
+                {
+                    var pl = row.Key; var c = row.Value;
+                    ((PixelGrid)c[0]).SetAll(pl.Box.LastImage ?? new int[100]);
+                    c[1].Text = pl.Name;
+                    string item = pl.CurrentItem; PlayItem it = null;
+                    lock (playlistGate) if (item != null) it = PlayItem.Find(pl.Cfg.Playlist, item);
+                    c[2].Text = !pl.Box.Connected ? "Not connected" : it != null ? "Playlist: " + it.Name : pl.Job != null ? (pl.Showing ?? "Playing from this PC")
+                              : pl.Box.LastMode ?? (pl.Box.LastImage != null ? "Picture" : "Nothing sent yet");
+                    c[3].Text = pl.PlaylistOn ? "Pause Playlist" : "Run Playlist";
+                }
                 var coming = UpNext(3);
                 for (int k = 0; k < 3; k++)
                 {
@@ -770,11 +1101,11 @@ namespace AuraBoxControl
                     nextName[k].Text = has ? (k + 1) + ".  " + coming[k].Name : k == 0 && coming == null ? "The playlist is off." : "";
                     nextTime[k].Text = has ? Duration(coming[k].Seconds) : k == 0 && coming == null ? "Run it to see what plays next." : "";
                 }
-                playBtn.Text = rotateBox.Checked ? "Pause Playlist" : "Run Playlist";
+                playBtn.Text = playlistOn ? "Pause Playlist" : "Run Playlist";
                 int[] img = box.LastImage; string mode = box.LastMode;
                 preview.SetAll(img ?? new int[100]);
                 string id = currentItem; PlayItem cur = null;
-                lock (playlistGate) if (id != null) cur = PlayItem.Find(cfg.Playlist, id);
+                lock (playlistGate) if (id != null) cur = PlayItem.Find(dcfg.Playlist, id);
                 if (!box.Connected) { what.Text = "Not connected"; detail.Text = "Connect at the top right. Background jobs reconnect on their own."; }
                 else if (cur != null)
                 {
@@ -791,14 +1122,13 @@ namespace AuraBoxControl
             return p;
         }
 
-        volatile string showing;   // name of a manual job (live animation, clock...) for the Now page
 
         // the turned-on playlist items that come after the one playing (wrapping around); null while the playlist is off
         List<PlayItem> UpNext(int count)
         {
-            if (!rotateBox.Checked) return null;
+            if (!playlistOn) return null;
             var on = new List<PlayItem>();
-            lock (playlistGate) foreach (var it in cfg.Playlist) if (it.On) on.Add(it);
+            lock (playlistGate) foreach (var it in dcfg.Playlist) if (it.On) on.Add(it);
             var list = new List<PlayItem>();
             if (on.Count == 0) return list;
             int at = on.FindIndex(it => it.Id == currentItem);
@@ -816,21 +1146,26 @@ namespace AuraBoxControl
         static List<KeyValuePair<string, string>> ShowNowChoices()
         {
             var list = new List<KeyValuePair<string, string>> {
+                new KeyValuePair<string, string>(EmptyPick, "Nothing (leave this button empty)"),
                 new KeyValuePair<string, string>("clock", "Clock"), new KeyValuePair<string, string>("weather", "Weather") };
             foreach (var la in LiveAnims) list.Add(new KeyValuePair<string, string>(la.Id, la.Name));
             for (int m = 0; m < Proto.ModeNames.Length; m++) list.Add(new KeyValuePair<string, string>("mode" + m, Proto.ModeNames[m] + " (built-in)"));
             return list;
         }
 
+        const string EmptyPick = "none";   // a Show Now button with nothing on it
+
         static string ShowNowName(string id)
         {
+            if (id == EmptyPick) return "(empty)";
             foreach (var c in ShowNowChoices()) if (c.Key == id) return c.Value;
             return id;
         }
 
         void ShowNowRun(string id)
         {
-            if (id == "clock") { StopRotationForManual(); ShowClockNow(); }
+            if (id == EmptyPick) status.Text = "This button is empty: right-click it to choose what it shows";
+            else if (id == "clock") { StopRotationForManual(); ShowClockNow(); }
             else if (id == "weather") ShowWeatherNow();
             else if (id.StartsWith("mode"))
             {
@@ -844,29 +1179,27 @@ namespace AuraBoxControl
         // A notification icon needs the screen to itself: the playlist (or whatever is playing) holds its next frame
         // for a few seconds, then the box gets back what it showed before. Its time keeps counting meanwhile.
         const double NotifySeconds = 6;
-        long holdUntilTicks;   // background jobs don't send before this time (DateTime ticks)
-        int flashCount;
 
         void FlashNotification(int code)
         {
             if (!box.Connected) { status.Text = "Not connected"; return; }
-            int mine = Interlocked.Increment(ref flashCount);
-            Interlocked.Exchange(ref holdUntilTicks, DateTime.Now.AddSeconds(NotifySeconds).Ticks);
+            int mine = Interlocked.Increment(ref P.FlashCount);
+            Interlocked.Exchange(ref P.HoldUntilTicks, DateTime.Now.AddSeconds(NotifySeconds).Ticks);
             string name = Proto.NotifyNames[code];
             status.Text = "Notification: " + name + (job != null ? " (playback holds for " + NotifySeconds + " s)" : "");
+            var pl = P;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 try
                 {
-                    box.Notify(code);
+                    pl.Box.Notify(code);
                     Thread.Sleep(TimeSpan.FromSeconds(NotifySeconds));
-                    if (mine == Interlocked.CompareExchange(ref flashCount, 0, 0)) box.Redisplay();   // a newer flash restores instead
+                    if (mine == Interlocked.CompareExchange(ref pl.FlashCount, 0, 0)) pl.Box.Redisplay();   // a newer flash restores instead
                 }
                 catch (Exception e)
                 {
-                    box.Close();
-                    try { BeginInvoke((Action)delegate { SetConnected(false, "Connection lost: " + e.Message); }); }
-                    catch (InvalidOperationException) { }
+                    pl.Box.Close();
+                    UiAs(pl, delegate { SetConnected(false, "Connection lost: " + e.Message); });
                 }
             });
         }
@@ -879,16 +1212,23 @@ namespace AuraBoxControl
                 {
                     var la = la0;
                     StopRotationForManual();
-                    StartJob(delegate { StreamLoop(la.Make(), LiveInterval(la.Id), DateTime.MaxValue); });
+                    StartJob(delegate { StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), DateTime.MaxValue); });
                     showing = la.Name;
                     status.Text = la.Name + " playing";
                 }
         }
 
-        // ---------- aurabox: built-in modes, solid color, audio input ----------
+        // ---------- original modes: the selected display's own built-in screens ----------
+        // AuraBox: modes, solid color, notification icons. Tivoo: clock, light, effects, tools, games (BuildTivooPanel).
         Panel BuildBoxPage()
         {
-            var p = NewPage();
+            var outer = NewPage();
+            var p = new Panel { Size = new Size(W, H) };
+            var tivoo = BuildTivooPanel();
+            outer.Controls.Add(p); outer.Controls.Add(tivoo);
+            Action follow = delegate { p.Visible = !(sel.Box is Tivoo); tivoo.Visible = sel.Box is Tivoo; };
+            follow();
+            deviceChanged += follow;
             var modes = NewCard("Mode", 0, 0, W, 112);
             for (int k = 0; k < Proto.ModeNames.Length; k++)
             {
@@ -923,8 +1263,186 @@ namespace AuraBoxControl
                 note.Controls.Add(Btn(Proto.NotifyNames[k], 12 + (k % 2) * 164, 40 + (k / 2) * 42, 156, delegate { FlashNotification(code); }));
             }
             p.Controls.Add(note);
+
+            // the built-in clock's color (12 or 24 hours follows the Clock & Weather page)
+            var clockCard = NewCard("Built-In Clock", 0, 396, W, 76);
+            clockCard.Controls.Add(new Label { Text = "Color:", Location = new Point(14, 42), AutoSize = true });
+            var clockColor = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(70, 38), Width = 120 };
+            for (int k = 1; k < 8; k++) clockColor.Items.Add(Proto.ColorNames[k]);
+            clockColor.SelectedIndex = Math.Max(1, Math.Min(7, cfg.AuraClockColor)) - 1;
+            clockColor.SelectedIndexChanged += delegate { cfg.AuraClockColor = clockColor.SelectedIndex + 1; ApplyTivooClock(); SaveSettings(); };
+            clockCard.Controls.Add(clockColor);
+            clockCard.Controls.Add(Btn("Show Clock", 204, 35, 120, delegate { StopRotationForManual(); Run(delegate { box.SetMode(0); }, "Mode: Clock"); }, true));
+            clockCard.Controls.Add(Note("12 or 24 hours: the Clock & Weather page.", 338, 42));
+            p.Controls.Add(clockCard);
             p.Controls.Add(Note("Brightness is the slider at the bottom of the window. The audio input (AUX jack or Bluetooth)\r\n" +
-                                "is on the Settings page.", 2, 396));
+                                "is on the Settings page.", 2, 482));
+            return outer;
+        }
+
+        // the window switched to another display: pages that differ by kind of display follow
+        Action deviceChanged = delegate { };
+
+        // run something on the selected Tivoo (pausing the playlist, like the AuraBox modes do)
+        void OnTivoo(Action<Tivoo> a, string done, bool manual = true)
+        {
+            var tv = box as Tivoo;
+            if (tv == null) return;
+            if (manual) StopRotationForManual();
+            Run(delegate { a(tv); }, done);
+        }
+
+        // a color button: shows its color, and clicking it opens the Windows color picker
+        Label ColorButton(int x, int y, Func<int> get, Action<int> set)
+        {
+            // a label, not a button: the theme repaints buttons, but leaves "swatch" labels their own color
+            var b = new Label { Location = new Point(x, y), Size = new Size(46, 26), Tag = "swatch", BorderStyle = BorderStyle.FixedSingle, Cursor = Cursors.Hand };
+            new ToolTip().SetToolTip(b, "Click to pick a color");
+            Action show = delegate { int c = get(); b.BackColor = Color.FromArgb(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF); };
+            show();
+            b.Click += delegate
+            {
+                using (var dlg = new ColorDialog { FullOpen = true, Color = b.BackColor })
+                    if (dlg.ShowDialog(this) == DialogResult.OK) { set(dlg.Color.ToArgb() & 0xFFFFFF); show(); }
+            };
+            return b;
+        }
+
+        // the Tivoo's clock as saved, for every Tivoo (12/24 hours from the Clock & Weather page)
+        void ApplyTivooClock()
+        {
+            Tivoo.ClockStyle = cfg.TivooClockStyle; Tivoo.ClockColor = cfg.TivooClockColor;
+            Tivoo.ClockWeather = cfg.TivooClockWeather; Tivoo.ClockTemp = cfg.TivooClockTemp; Tivoo.ClockCalendar = cfg.TivooClockCalendar;
+            Tivoo.Hour24 = H24;
+            Tivoo.Vivid = cfg.TivooVivid;
+            AuraBox.ClockH24 = H24; AuraBox.ClockColor = cfg.AuraClockColor;
+        }
+
+        // the current weather to a Tivoo (for its clock's weather and its weather screen)
+        void SendWeatherTo(Tivoo tv, WeatherInfo w)
+        {
+            double c = w.Unit == "F" ? (w.Temp - 32) * 5 / 9 : w.Temp;
+            tv.SendWeather((int)Math.Round(c), Tivoo.WeatherType(w.Code), cfg.Fahrenheit);
+        }
+
+        Panel BuildTivooPanel()
+        {
+            var p = new Panel { Size = new Size(W, H), AutoScroll = true };   // scrolls for the last card
+            const int CW = W - 22;   // card width, leaving room for the scroll bar
+            int lightColor = 0xFF8000, lightEffect = 0;
+
+            // the clock: style, what shows with it, its color; also used by the playlist's Clock
+            var clock = NewCard("Clock", 0, 0, CW, 148);
+            clock.Controls.Add(new Label { Text = "Style:", Location = new Point(14, 42), AutoSize = true });
+            var style = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(70, 38), Width = 190 };
+            style.Items.AddRange(Tivoo.ClockStyles);
+            style.SelectedIndex = Math.Max(0, Math.Min(Tivoo.ClockStyles.Length - 1, cfg.TivooClockStyle));
+            var wx = new CheckBox { Text = "Weather", Location = new Point(280, 41), AutoSize = true, Checked = cfg.TivooClockWeather };
+            var tmp = new CheckBox { Text = "Temperature", Location = new Point(372, 41), AutoSize = true, Checked = cfg.TivooClockTemp };
+            var cal = new CheckBox { Text = "Calendar", Location = new Point(496, 41), AutoSize = true, Checked = cfg.TivooClockCalendar };
+            clock.Controls.Add(new Label { Text = "Color:", Location = new Point(14, 84), AutoSize = true });
+            var color = ColorButton(70, 79, () => cfg.TivooClockColor, delegate (int c) { cfg.TivooClockColor = c; ApplyTivooClock(); SaveSettings(); });
+            Action saveClock = delegate
+            {
+                cfg.TivooClockStyle = style.SelectedIndex; cfg.TivooClockWeather = wx.Checked; cfg.TivooClockTemp = tmp.Checked; cfg.TivooClockCalendar = cal.Checked;
+                ApplyTivooClock(); SaveSettings();
+            };
+            style.SelectedIndexChanged += delegate { saveClock(); };
+            wx.CheckedChanged += delegate { saveClock(); }; tmp.CheckedChanged += delegate { saveClock(); }; cal.CheckedChanged += delegate { saveClock(); };
+            clock.Controls.Add(style); clock.Controls.Add(wx); clock.Controls.Add(tmp); clock.Controls.Add(cal); clock.Controls.Add(color);
+            clock.Controls.Add(Btn("Show Clock", 136, 76, 130, delegate
+            {
+                var w = GetWeather(false);
+                OnTivoo(tv => { if (w != null) SendWeatherTo(tv, w); tv.ShowClock(); }, "Showing the Tivoo clock");
+            }, true));
+            clock.Controls.Add(Btn("Show Weather", 274, 76, 130, delegate
+            {
+                var w = GetWeather(false);
+                if (w == null) { status.Text = "No weather yet: check the place on the Clock & Weather page"; return; }
+                OnTivoo(tv => { SendWeatherTo(tv, w); tv.ShowWeather(); }, "Weather on the Tivoo: " + Math.Round(w.Temp) + "°" + w.Unit + ", " + w.Description);
+            }));
+            clock.Controls.Add(Note("The playlist's Clock and Weather use these too. 12 or 24 hours: the Clock & Weather page.", 14, 118));
+            p.Controls.Add(clock);
+
+            // light, effects and the music visualizer
+            var fx = NewCard("Light, Effects and Visualizer", 0, 158, CW, 112);
+            fx.Controls.Add(new Label { Text = "Light:", Location = new Point(14, 44), AutoSize = true });
+            fx.Controls.Add(ColorButton(70, 39, () => lightColor, delegate (int c) { lightColor = c; }));
+            var effect = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(124, 40), Width = 136 };
+            effect.Items.AddRange(Tivoo.LightEffects); effect.SelectedIndex = 0;
+            effect.SelectedIndexChanged += delegate { lightEffect = effect.SelectedIndex; };
+            fx.Controls.Add(effect);
+            fx.Controls.Add(Btn("Show Light", 268, 37, 120, delegate
+            {
+                int c = lightColor, e = lightEffect;
+                OnTivoo(tv => tv.ShowLight(Color.FromArgb(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF), e), "Tivoo light on");
+            }));
+            Func<string, ComboBox> numbers = delegate (string what)
+            {
+                var cb = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
+                for (int k = 1; k <= 16; k++) cb.Items.Add(what + " " + k);
+                cb.SelectedIndex = 0;
+                return cb;
+            };
+            var fxn = numbers("Effect"); fxn.Location = new Point(14, 76); fx.Controls.Add(fxn);
+            fx.Controls.Add(Btn("Show", 142, 73, 80, delegate { int n = fxn.SelectedIndex; OnTivoo(tv => tv.ShowEffect(n), "Tivoo effect " + (n + 1)); }));
+            var viz = numbers("Visualizer"); viz.Location = new Point(268, 76); fx.Controls.Add(viz);
+            fx.Controls.Add(Btn("Show", 396, 73, 80, delegate { int n = viz.SelectedIndex; OnTivoo(tv => tv.ShowVisualizer(n), "Tivoo visualizer " + (n + 1)); }));
+            fx.Controls.Add(Note("The visualizer moves with\r\nmusic the Tivoo plays.", 494, 70));
+            p.Controls.Add(fx);
+
+            // tools: scoreboard, countdown, stopwatch, noise meter
+            var tools = NewCard("Tools", 0, 280, CW, 112);
+            tools.Controls.Add(new Label { Text = "Red:", Location = new Point(14, 44), AutoSize = true });
+            var red = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(56, 40), Width = 60 };
+            tools.Controls.Add(new Label { Text = "Blue:", Location = new Point(128, 44), AutoSize = true });
+            var blue = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(174, 40), Width = 60 };
+            tools.Controls.Add(red); tools.Controls.Add(blue);
+            tools.Controls.Add(Btn("Show Scoreboard", 246, 37, 150, delegate
+            {
+                int r = (int)red.Value, b = (int)blue.Value;
+                OnTivoo(tv => tv.ShowScoreboard(r, b), "Scoreboard " + r + " : " + b);
+            }));
+            tools.Controls.Add(Note("Change a score and\r\nshow it again to update.", 410, 36));
+            tools.Controls.Add(new Label { Text = "Countdown:", Location = new Point(14, 80), AutoSize = true });
+            var mm = new NumericUpDown { Minimum = 0, Maximum = 99, Value = 5, Location = new Point(100, 76), Width = 50 };
+            var ss = new TwoDigitUpDown { Minimum = 0, Maximum = 59, Value = 0, Location = new Point(164, 76), Width = 50 };
+            tools.Controls.Add(new Label { Text = ":", Location = new Point(152, 80), AutoSize = true });
+            tools.Controls.Add(mm); tools.Controls.Add(ss);
+            tools.Controls.Add(Btn("Start", 222, 73, 80, delegate
+            {
+                int m = (int)mm.Value, sec = (int)ss.Value;
+                OnTivoo(tv => tv.ShowCountdown(m, sec), "Tivoo countdown: " + m + ":" + sec.ToString("00"));
+            }));
+            tools.Controls.Add(Btn("Stopwatch", 316, 73, 110, delegate { OnTivoo(tv => tv.ShowStopwatch(), "Tivoo stopwatch"); }));
+            tools.Controls.Add(Btn("Noise Meter", 434, 73, 120, delegate { OnTivoo(tv => tv.ShowNoiseMeter(), "Tivoo noise meter"); }));
+            p.Controls.Add(tools);
+
+            // the Tivoo's built-in games and their buttons
+            var games = NewCard("Games", 0, 402, CW, 112);
+            var game = numbers("Game"); game.Location = new Point(14, 42); game.Width = 110; games.Controls.Add(game);
+            games.Controls.Add(Btn("Play", 132, 39, 80, delegate { int n = game.SelectedIndex; OnTivoo(tv => tv.ShowGame(n), "Tivoo game " + (n + 1)); }, true));
+            string[] keys = { "Go", "◀", "▶", "▲", "▼", "OK" };
+            for (int k = 0; k < keys.Length; k++)
+            {
+                int key = k;
+                games.Controls.Add(Btn(keys[k], 236 + k * 58, 39, 52, delegate { OnTivoo(tv => tv.GameKey(key), "Sent " + keys[key], false); }));
+            }
+            games.Controls.Add(Note("Then press the buttons to play. Which games there are depends on the Tivoo's firmware.", 14, 80));
+            p.Controls.Add(games);
+
+            // notification icons, and how strongly colors are boosted for the Tivoo's LEDs
+            var more = NewCard("Notifications and Colors", 0, 524, CW, 112);
+            more.Controls.Add(new Label { Text = "Notification:", Location = new Point(14, 44), AutoSize = true });
+            var notify = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(110, 40), Width = 150 };
+            notify.Items.AddRange(Proto.NotifyNames); notify.SelectedIndex = 2;
+            more.Controls.Add(notify);
+            more.Controls.Add(Btn("Flash", 268, 37, 80, delegate { FlashNotification(notify.SelectedIndex); }));
+            more.Controls.Add(new Label { Text = "Color boost:", Location = new Point(14, 80), AutoSize = true });
+            RadioRow(more, new[] { "Off", "Vivid", "Extra Vivid" }, new[] { 110, 170, 250 }, 78, cfg.TivooVivid,
+                     delegate (int v) { cfg.TivooVivid = v; Tivoo.Vivid = v; SaveSettings(); status.Text = "Color boost: " + (v == 0 ? "off" : v == 1 ? "vivid" : "extra vivid") + " (applies to the next picture sent)"; });
+            more.Controls.Add(Note("Deeper, richer colors on the LEDs;\r\nthe app's previews stay as they are.", 380, 70));
+            p.Controls.Add(more);
             return p;
         }
 
@@ -933,7 +1451,8 @@ namespace AuraBoxControl
         void SendBrightness()
         {
             int v = bright.Value;
-            cfg.Brightness = v;
+            if (P.Brightness == v) return;   // just showing the selected display's level
+            P.Brightness = v;
             Run(delegate { box.SetBrightness(v); }, "Brightness: " + v);
         }
 
@@ -968,12 +1487,12 @@ namespace AuraBoxControl
             p.Controls.Add(liveBox);
 
             // the animation's frames as a strip under the editor: click to pick one, double-click to edit it
-            var strip = NewCard("Animation Frames (up to 8): click to pick, double-click to edit", 0, 352, W, 164);
-            for (int k = 0; k < 8; k++)
+            var strip = NewCard("Animation Frames (up to " + AuraBox.MaxFrames + "): click to pick, double-click to edit", 0, 352, W, 164);
+            for (int k = 0; k < AuraBox.MaxFrames; k++)
             {
-                int i = k, x = 12 + k * 58;
-                frameSlots[k] = new PixelGrid(5) { Location = new Point(x, 32), ReadOnly = true, Cursor = Cursors.Hand };
-                frameRims[k] = new Label { Location = new Point(x - 3, 29), Size = new Size(56, 56), Tag = "swatch", BackColor = Color.Transparent };
+                int i = k, x = 12 + k * 39;
+                frameSlots[k] = new PixelGrid(3) { Location = new Point(x, 40), ReadOnly = true, Cursor = Cursors.Hand };
+                frameRims[k] = new Label { Location = new Point(x - 3, 37), Size = new Size(36, 36), Tag = "swatch", BackColor = Color.Transparent };
                 frameSlots[k].Click += delegate { if (i < frames.Count) { selFrame = i; RefreshFrames(); } };
                 frameSlots[k].DoubleClick += delegate { if (i < frames.Count) { selFrame = i; RefreshFrames(); LoadFrame(); } };
                 strip.Controls.Add(frameSlots[k]); strip.Controls.Add(frameRims[k]);   // added after, so the rim sits behind
@@ -988,7 +1507,7 @@ namespace AuraBoxControl
             string[] labels2 = { "Add Drawing", "Replace", "Edit Frame", "Remove", "◀  Move Left", "Move Right  ▶", "Clear All", "Import GIF..." };
             Action[] actions2 = {
                 delegate {
-                    if (frames.Count >= 8) { MessageBox.Show(this, "The AuraBox holds at most 8 frames.", "AuraBox Control"); return; }
+                    if (frames.Count >= AuraBox.MaxFrames) { MessageBox.Show(this, "The AuraBox holds at most " + AuraBox.MaxFrames + " frames.", "VaVaVoom Control"); return; }
                     frames.Add((int[])grid.Pixels.Clone()); selFrame = frames.Count - 1; RefreshFrames(); },
                 delegate { if (selFrame >= 0 && selFrame < frames.Count) { frames[selFrame] = (int[])grid.Pixels.Clone(); RefreshFrames(); } },
                 LoadFrame,
@@ -1131,7 +1650,7 @@ namespace AuraBoxControl
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 string[] lines = File.ReadAllLines(dlg.FileName);
-                if (lines.Length == 0 || Parse(lines[0]) == null) { MessageBox.Show(this, "Not an AuraBox design file.", "AuraBox Control"); return; }
+                if (lines.Length == 0 || Parse(lines[0]) == null) { MessageBox.Show(this, "Not an AuraBox design file.", "VaVaVoom Control"); return; }
                 grid.SetAll(Parse(lines[0]));
                 frames.Clear();
                 for (int k = 1; k < lines.Length && frames.Count < 8; k++) { var f = Parse(lines[k]); if (f != null) frames.Add(f); }
@@ -1139,216 +1658,734 @@ namespace AuraBoxControl
             }
         }
 
-        // ---------- gallery (built-in designs + Divoom cloud) ----------
-        static readonly string[] CloudSources = {
-            "Divoom Cloud: Featured Animations", "Divoom Cloud: Popular Animations", "Divoom Cloud: New Animations",
-            "Divoom Cloud: Featured Pictures", "Divoom Cloud: Popular Pictures" };
-        static readonly int[] CloudCategory = { 1, 2, 3, 1, 2 };
+        // ---------- gallery: built-in designs, favorites, Divoom's 16 x 16 art (by topic, search, the account's likes and
+        // uploads), Divoom's older small art and LaMetric's icons, in one list down the left ----------
+        class GallerySource
+        {
+            public string Title, Kind, Query;   // Kind: header, fav, builtin, d16, search, likes, uploads, classic, lametric
+            public int Arg, Sort;                // d16: category and sort; classic: Divoom's category; builtin: -
+            public string Key { get { return Kind + ":" + Arg + ":" + Sort + ":" + Query; } }
+            public bool Cloud { get { return Kind != "fav" && Kind != "builtin" && Kind != "header" && Kind != "mylist" && Kind != "newlist"; } }
+            public bool Mine { get { return Kind == "search" || Kind == "likes" || Kind == "uploads"; } }
+            public bool KeepNames { get { return Mine || Kind == "holiday"; } }   // keep same-named designs (many are just "Halloween")
+            public override string ToString() { return Title; }
+        }
+
+        static List<GallerySource> GallerySources(List<string> builtIn)
+        {
+            var list = new List<GallerySource>();
+            Action<string> header = t => list.Add(new GallerySource { Title = t, Kind = "header" });
+            header("MINE");
+            list.Add(new GallerySource { Title = "★  Favorites 16×16", Kind = "fav", Arg = 16 });   // Arg: the designs' size
+            list.Add(new GallerySource { Title = "★  Favorites 10×10", Kind = "fav", Arg = 10 });
+            list.Add(new GallerySource { Title = "My Divoom Likes", Kind = "likes" });
+            list.Add(new GallerySource { Title = "My Divoom Uploads", Kind = "uploads" });
+            header("DIVOOM 16×16");
+            // Divoom's category numbers, matched to what each one actually holds (sampled 2026-11-10): 34 emoji, 23
+            // characters (Yoda, The Simpsons, Toy Story), 4 fan characters (Venom, Harley), 9 games (Minecraft, Tetris,
+            // Pac-Man), 24 patterns, 33 people. Characters shows 23, 4 and 33 (people) together. (Divoom's holiday
+            // categories, 17, 25 and 30, mix holidays together, so each holiday below is a Divoom search instead.)
+            string[] topics = { "Recommended", "Newest", "Emoji", "Characters", "Animals", "Food", "Plants", "Games", "Symbols", "Patterns" };
+            int[] classify = { 18, 0, 34, 23, 32, 35, 31, 9, 7, 24 };
+            for (int k = 0; k < topics.Length; k++)
+                list.Add(new GallerySource { Title = topics[k], Kind = "d16", Arg = classify[k], Sort = k == 1 ? 0 : 1,   // Newest by date, the rest most liked
+                                             Query = topics[k] == "Characters" ? "4,33" : null });                       // more categories shown with it
+            // each holiday: the Divoom searches whose results it shows together (Holidays.cs)
+            header("HOLIDAYS");
+            foreach (var h in Holidays.All) list.Add(new GallerySource { Title = h.Name, Kind = "holiday", Query = h.Searches });
+            header("SMALL ART");
+            list.Add(new GallerySource { Title = "Classic: Featured", Kind = "classic", Arg = 1 });
+            list.Add(new GallerySource { Title = "Classic: Popular", Kind = "classic", Arg = 2 });
+            list.Add(new GallerySource { Title = "Classic: Newest", Kind = "classic", Arg = 3 });
+            list.Add(new GallerySource { Title = "Icons: Popular", Kind = "lametric", Query = "popular" });
+            list.Add(new GallerySource { Title = "Icons: Newest", Kind = "lametric", Query = "newest" });
+            if (builtIn.Count > 0)
+            {
+                header("BUILT-IN");
+                foreach (var c in builtIn) list.Add(new GallerySource { Title = c, Kind = "builtin", Query = c });
+            }
+            return list;
+        }
+
+        // one page of a cloud source; total: how many designs it has (-1 = not known yet)
+        static List<DivoomCloud.Entry> CloudList(GallerySource s, int page, out int total)
+        {
+            total = -1;
+            switch (s.Kind)
+            {
+                case "d16":
+                    var d16 = DivoomCloud16.List(s.Arg, s.Sort, page, out total);
+                    if (!string.IsNullOrEmpty(s.Query))   // more categories on the same pages (Characters: 23 and 4)
+                        foreach (string c in s.Query.Split(','))
+                        {
+                            int more;
+                            d16.AddRange(DivoomCloud16.List(int.Parse(c), s.Sort, page, out more));
+                        }
+                    // holiday designs belong under their holiday (Halloween's pumpkins and ghosts, Christmas, Easter...):
+                    // the topic lists leave them out (Recommended and Newest show everything); checked on the original
+                    // name, so Divoom's Haunted2026 contest tag counts too
+                    if (s.Arg != 18 && s.Arg != 0) d16.RemoveAll(e => Holidays.Of(e.Name) != null);
+                    return d16;
+                case "holiday":   // its searches side by side on each page, each design once; a search Divoom refuses is skipped
+                    var found = new List<DivoomCloud.Entry>();
+                    var ids = new HashSet<string>();
+                    Exception failed = null; int answered = 0;
+                    foreach (string words in s.Query.Split('|'))
+                    {
+                        List<DivoomCloud.Entry> part;
+                        int t;
+                        try { part = DivoomCloud16.Search(words, page, out t); answered++; } catch (Exception ex) { failed = ex; continue; }
+                        foreach (var e in part) if (ids.Add(e.Id)) found.Add(e);
+                    }
+                    if (answered == 0 && failed != null) throw failed;   // nothing answered: say why instead of showing an empty list
+                    return found;
+                case "search": return DivoomCloud16.Search(s.Query, page, out total);
+                case "likes": return DivoomCloud16.Mine(true, page, out total);
+                case "uploads": return DivoomCloud16.Mine(false, page, out total);
+                case "lametric":
+                    int pages;
+                    var icons = LaMetricIcons.List(s.Query, page, out pages);
+                    total = pages * DivoomCloud.PageSize;
+                    return icons;
+                default:   // classic: its animations and (for Featured and Popular) its pictures, side by side
+                    var both = DivoomCloud.List(s.Arg, true, page);
+                    if (s.Arg != 3) both.AddRange(DivoomCloud.List(s.Arg, false, page));
+                    return both;
+            }
+        }
+
+        // How many designs a list holds: find its last page that still has designs (Divoom sometimes sends a page a
+        // design or two short, so only an empty page marks the end) by doubling the page number until one is empty,
+        // then halving the gap. About a dozen small requests, spaced out so Divoom doesn't refuse them. Divoom stops
+        // at 10,000 (333 pages).
+        static int MeasureTotal(Func<int, int> countAt)
+        {
+            int size = DivoomCloud.PageSize, last = 10000 / size - 1;
+            int c = countAt(0);
+            if (c == 0) return 0;
+            int lo = 0, loCount = c, hi = 1;   // lo: a page with designs; hi: the next page to try
+            while (true)
+            {
+                Thread.Sleep(400);
+                hi = Math.Min(hi, last);
+                c = countAt(hi);
+                if (c == 0) break;
+                lo = hi; loCount = c;
+                if (hi == last) return 10000;
+                hi *= 2;
+            }
+            while (hi - lo > 1)
+            {
+                Thread.Sleep(400);
+                int mid = (lo + hi) / 2;
+                c = countAt(mid);
+                if (c > 0) { lo = mid; loCount = c; } else hi = mid;
+            }
+            return lo * size + loCount;
+        }
+
+        // classic lists don't say how long they are: measure them (slow, so once per session, in the background)
+        static int ClassicCount(GallerySource s)
+        {
+            int anims = DivoomCloud.Count(s.Arg, true), pics = s.Arg != 3 ? DivoomCloud.Count(s.Arg, false) : 0;
+            return Math.Max(anims, pics);
+        }
+
+        static List<int[]> CloudFrames(string id)
+        {
+            if (id.StartsWith(DivoomCloud16.Prefix)) return DivoomCloud16.Frames(id.Substring(DivoomCloud16.Prefix.Length));
+            return id.StartsWith(LaMetricIcons.Prefix) ? LaMetricIcons.Frames(id.Substring(LaMetricIcons.Prefix.Length)) : DivoomCloud.Frames(id);
+        }
 
         Panel BuildGalleryPage()
         {
             var p = NewPage();
             var items = GalleryItem.Load();
+            foreach (var it in items) { string plain = GalleryNames.NoYears(it.Name); if (plain.Length > 0) it.Name = plain; Renamed(it); }
             var cats = new List<string>();
             foreach (var it in items) if (!cats.Contains(it.Category)) cats.Add(it.Category);
-
-            var catBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(0, 2), Width = 250 };
-            var search = new TextBox { Location = new Point(258, 3), Width = 136 };
-            search.HandleCreated += delegate { SendMessage(search.Handle, EM_SETCUEBANNER, (IntPtr)1, "Search names"); };
-            p.Controls.Add(search);
-            foreach (var c in cats) catBox.Items.Add("Built-In: " + c);
-            catBox.Items.Add("My Favorites");
-            foreach (var c in CloudSources) catBox.Items.Add(c);
             var favorites = GalleryItem.LoadFavorites();
-            p.Controls.Add(catBox);
-            var prev = Btn("‹ Previous", W - 300, 0, 100, null); var next = Btn("Next ›", W - 100, 0, 100, null);
-            var pageLabel = new Label { Location = new Point(W - 196, 7), Size = new Size(92, 20), TextAlign = ContentAlignment.TopCenter, UseMnemonic = false };
-            var pageCounts = new Dictionary<int, int>();   // cloud source -> number of pages, counted once per session
-            var counting = new HashSet<int>();
+            var myLists = MyLists.Load();
+            var sources = GallerySources(cats);
+
+            // the sources down the left: section headings (not pickable) and the lists under them
+            const int NavW = 176, X = NavW + 10, VW = W - X;
+            var nav = new AccessibleListBox { Location = new Point(0, 0), Size = new Size(NavW, 418), DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = Theme.Px(23),
+                                              IntegralHeight = false, BorderStyle = BorderStyle.None, AccessibleName = "Gallery lists" };
+            nav.IsHeading = o => ((GallerySource)o).Kind == "header";
+            nav.NameOf = o => ((GallerySource)o).Title.Replace("★  ", "");
+            nav.DrawItem += delegate (object s, DrawItemEventArgs e)
+            {
+                if (e.Index < 0) return;
+                var src = (GallerySource)nav.Items[e.Index];
+                bool head = src.Kind == "header", picked = (e.State & DrawItemState.Selected) != 0 && !head;
+                using (var bg = new SolidBrush(picked ? Theme.AccentFill : nav.BackColor)) e.Graphics.FillRectangle(bg, e.Bounds);
+                var font = head ? new Font(Theme.UiFont, 7.5f, FontStyle.Bold) : nav.Font;
+                var color = picked ? Theme.AccentText : head ? Theme.Subtle : Theme.Text;
+                var r = new Rectangle(e.Bounds.X + (head ? 4 : 12), e.Bounds.Y + (head ? 5 : 0), e.Bounds.Width - 14, e.Bounds.Height);
+                TextRenderer.DrawText(e.Graphics, src.Title, font, r, color, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                if (head) font.Dispose();
+            };
+            foreach (var s in sources) nav.Items.Add(s);
+            p.Controls.Add(nav);
+            // the user's own lists sit under the favorites, then "+ New List…"; rebuilt whenever a list is made,
+            // renamed or deleted (navQuiet: the nav's selection changes meanwhile don't load anything)
+            bool navQuiet = false;
+            Action refreshLists = delegate
+            {
+                navQuiet = true;
+                try
+                {
+                    for (int k = nav.Items.Count - 1; k >= 0; k--)
+                    {
+                        var s = (GallerySource)nav.Items[k];
+                        if (s.Kind == "mylist" || s.Kind == "newlist") nav.Items.RemoveAt(k);
+                    }
+                    int at = -1;
+                    for (int k = 0; k < nav.Items.Count; k++) if (((GallerySource)nav.Items[k]).Kind == "fav") at = k;
+                    foreach (var n in myLists.Names) nav.Items.Insert(++at, new GallerySource { Title = "▸  " + n, Kind = "mylist", Query = n });
+                    nav.Items.Insert(++at, new GallerySource { Title = "+  New List…", Kind = "newlist" });
+                }
+                finally { navQuiet = false; }
+            };
+            refreshLists();
+            nav.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
+            var account = Btn("Divoom Account…", 0, 424, NavW, delegate { DivoomAccountDialog(); });
+            account.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            p.Controls.Add(account);
+
+            // top: search (filters the list shown as you type; Enter searches all of Divoom's 16 x 16 art), English names
+            var search = new TextBox { Location = new Point(X, 3), Width = 240 };
+            search.HandleCreated += delegate { SendMessage(search.Handle, EM_SETCUEBANNER, (IntPtr)1, "Filter by name, or press Enter to search Divoom"); };
+            p.Controls.Add(search);
+            var english = new CheckBox { Text = "English names", Location = new Point(X + 250, 5), AutoSize = true, Checked = cfg.TranslateNames };
+            p.Controls.Add(english);
+            // every animated thumbnail plays (only the ones in view, each at its own speed); this pauses them all
+            bool animateAll = cfg.GalleryAnimate;
+            var animBtn = Btn(animateAll ? "❚❚  Pause Animations" : "▶  Play Animations", W - 156, 0, 156, null);
+            animBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            animBtn.AccessibleName = animateAll ? "Pause animations" : "Play animations";
+            p.Controls.Add(animBtn);
+            var title = new Label { Location = new Point(X, 36), Size = new Size(VW - 300, 22), Font = Theme.Semibold(10f), UseMnemonic = false, AutoEllipsis = true };
+            p.Controls.Add(title);
+            var prev = Btn("‹ Previous", W - 290, 31, 96, null); var next = Btn("Next ›", W - 96, 31, 96, null);
+            var pageLabel = new Label { Location = new Point(W - 192, 36), Size = new Size(94, 20), TextAlign = ContentAlignment.TopCenter, UseMnemonic = false };
+            prev.Anchor = next.Anchor = pageLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             p.Controls.Add(prev); p.Controls.Add(next); p.Controls.Add(pageLabel);
+            var favSort = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(W - 170, 32), Width = 170, Visible = false,
+                                         AccessibleName = "Favorites order" };
+            favSort.Items.AddRange(new object[] { "A to Z", "Newest first", "Oldest first" });
+            favSort.SelectedIndex = cfg.FavoriteSort;
+            favSort.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            p.Controls.Add(favSort);
+            var totals = new Dictionary<string, int>();   // source -> how many designs, once known
+            var counting = new HashSet<string>();
 
             int thumb = Theme.Px(50);
             var images = new ImageList { ImageSize = new Size(thumb, thumb), ColorDepth = ColorDepth.Depth24Bit };
-            var view = new ListView { Location = new Point(0, 40), Size = new Size(W, 412), View = View.LargeIcon, LargeImageList = images,
+            var view = new ListView { Location = new Point(X, 64), Size = new Size(VW, 388), View = View.LargeIcon, LargeImageList = images,
                                       MultiSelect = false, HideSelection = false, BorderStyle = BorderStyle.None };
             AccentIcons(view);
+            view.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             p.Controls.Add(view);
             var shown = new List<GalleryItem>();
             var preview = new System.Windows.Forms.Timer { Interval = 250 };
-            int previewFrame = 0, cloudPage = 0, generation = 0;
+            int cloudPage = 0, generation = 0;
+            GallerySource cur = null, searchSource = null;
             var pageCache = new Dictionary<string, List<GalleryItem>>();      // "source:page" -> deduplicated items
-            var downloads = new Dictionary<string, List<int[]>>();            // FileId -> converted frames
+            var pageNotes = new Dictionary<string, string>();                  // "source:page" -> what the status said
+            var downloads = new Dictionary<string, List<int[]>>();            // FileId -> frames
             var seen = new HashSet<string>();                                 // looks already shown (built-ins included)
-            foreach (var it in items) { seen.Add(Signature(it.Frames)); string n = NameKey(it.Name); if (n.Length > 0) seen.Add(n); }
+            foreach (var it in items) seen.Add(Signature(it.Frames));
 
-            // search: the list loaded for the source (all of it, or one cloud page) is kept in pageItems,
-            // and only names containing the search text are shown
+            // the list loaded for the source (all of it, or one cloud page) is kept in pageItems; typing in the search
+            // box shows only the names containing the text
             var pageItems = new List<GalleryItem>();
             Func<GalleryItem, bool> matches = it =>
                 search.Text.Trim().Length == 0 || (it.Name ?? "").IndexOf(search.Text.Trim(), StringComparison.CurrentCultureIgnoreCase) >= 0;
             Action<GalleryItem> display = delegate (GalleryItem it)
             {
-                images.Images.Add(Proto.Render(it.Frames[0], Math.Max(1, thumb / 10)));
+                images.Images.Add(Proto.Render(it.Frames[BestFrame(it)], Math.Max(1, thumb / 10)));
                 view.Items.Add(new ListViewItem(it.Name, images.Images.Count - 1));
                 shown.Add(it);
             };
             Action<GalleryItem> addItem = delegate (GalleryItem it) { pageItems.Add(it); if (matches(it)) display(it); };
             Action clearView = delegate { view.Items.Clear(); images.Images.Clear(); shown.Clear(); pageItems.Clear(); };
+            bool searching = false;   // set while Enter starts a Divoom search, so the box's text isn't used as a filter
+            bool toldTranslate = false;   // the translator's trouble is mentioned once
             search.TextChanged += delegate
             {
+                if (searching) return;
                 view.BeginUpdate();
                 view.Items.Clear(); images.Images.Clear(); shown.Clear();
                 foreach (var it in pageItems) if (matches(it)) display(it);
                 view.EndUpdate();
                 if (search.Text.Trim().Length > 0)
-                    status.Text = shown.Count + " of " + pageItems.Count + " match “" + search.Text.Trim() + "”" + (catBox.SelectedIndex > cats.Count ? " on this page" : "");
+                    status.Text = shown.Count + " of " + pageItems.Count + " match “" + search.Text.Trim() + "”" + (cur != null && cur.Cloud ? " on this page (press Enter to search all of Divoom)" : "");
             };
 
             var favBtn = Btn("Add to Favorites", W - 170, 462, 170, null);
+            favBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             Action load = null;
+            Func<bool> onFavorites = () => cur != null && cur.Kind == "fav";
+            Func<bool> onList = () => cur != null && cur.Kind == "mylist";
+            // make a list (asks for its name); null when cancelled
+            Func<string> newList = null;
+            Action<string> selectList = null;
+            newList = delegate
+            {
+                string n = AskText("New List", "Name for the new list:", "");
+                if (n == null) return null;
+                n = n.Trim().Replace("|", "/");
+                if (n.Length == 0) return null;
+                if (myLists.Names.Contains(n)) return n;
+                myLists.Names.Add(n);
+                try { myLists.Save(); }
+                catch (Exception e) { myLists.Names.Remove(n); status.Text = "Could not save the list: " + e.Message; return null; }
+                refreshLists();
+                status.Text = "Made the list “" + n + "”: right-click any design and choose Add to List";
+                return n;
+            };
+            selectList = delegate (string n)
+            {
+                foreach (GallerySource x in nav.Items) if (x.Kind == "mylist" && x.Query == n) { nav.SelectedItem = x; return; }
+            };
+            // a copy of a design put in one of the user's lists (once per list)
+            Action<GalleryItem, string> addToList = delegate (GalleryItem it, string n)
+            {
+                string sig = Signature(it.Frames);
+                foreach (var x in myLists.In(n)) if (Signature(x.Frames) == sig) { status.Text = "“" + it.Name + "” is already in “" + n + "”"; return; }
+                var copy = new GalleryItem { Category = n, Name = it.Name, Ms = it.Ms };
+                foreach (var f in it.Frames) copy.Frames.Add((int[])f.Clone());
+                myLists.Items.Add(copy);
+                try { myLists.Save(); }
+                catch (Exception e) { myLists.Items.Remove(copy); status.Text = "Could not save the list: " + e.Message; return; }
+                status.Text = "Added “" + it.Name + "” to “" + n + "”";
+            };
+            favSort.SelectedIndexChanged += delegate
+            {
+                if (cfg.FavoriteSort == favSort.SelectedIndex) return;
+                cfg.FavoriteSort = favSort.SelectedIndex; SaveSettings();
+                if (onFavorites() || onList()) load();
+            };
+            // a copy of a design saved to favorites (false when the same look is already there)
+            Func<GalleryItem, string, bool> saveFavorite = delegate (GalleryItem it, string name)
+            {
+                string sig = Signature(it.Frames);
+                foreach (var f in favorites) if (Signature(f.Frames) == sig) { status.Text = "“" + f.Name + "” is already a favorite"; return false; }
+                var copy = new GalleryItem { Category = "Favorites", Name = name, Ms = it.Ms };
+                foreach (var f in it.Frames) copy.Frames.Add((int[])f.Clone());
+                favorites.Add(copy);
+                try { GalleryItem.SaveFavorites(favorites); }
+                catch (Exception e) { favorites.Remove(copy); status.Text = "Could not save favorites: " + e.Message; return false; }
+                int side = copy.Frames.Count > 0 ? Proto.Side(copy.Frames[0]) : 10;
+                status.Text = "Saved “" + name + "” to Favorites " + side + "×" + side + " (kept on this PC)";
+                return true;
+            };
+            // a 16 x 16 design made 10 x 10 for the AuraBox (each frame shrunk to its 8 colors), saved to Favorites 10×10
+            // to touch up with Edit
+            Action<GalleryItem> save10 = delegate (GalleryItem it)
+            {
+                var small = new GalleryItem { Category = "Favorites" };
+                var sigs = new HashSet<string>();
+                foreach (var f in it.Frames)
+                {
+                    var px = Proto.To10(f);
+                    if (it.Frames.Count == 1 || sigs.Add(string.Join(",", px))) small.Frames.Add(px);   // repeated frames once
+                    if (small.Frames.Count >= 60) break;
+                }
+                if (saveFavorite(small, it.Name + " (10×10)"))
+                    status.Text += ": open Favorites 10×10 to edit it";
+            };
             favBtn.Click += delegate
             {
                 if (view.SelectedIndices.Count == 0) { status.Text = "Pick a design first"; return; }
                 var it = shown[view.SelectedIndices[0]];
-                if (catBox.SelectedIndex == cats.Count) favorites.Remove(it);
-                else
-                {
-                    string sig = Signature(it.Frames);
-                    foreach (var f in favorites) if (Signature(f.Frames) == sig) { status.Text = "“" + it.Name + "” is already a favorite"; return; }
-                    var copy = new GalleryItem { Category = "Favorites", Name = it.Name };
-                    foreach (var f in it.Frames) copy.Frames.Add((int[])f.Clone());
-                    favorites.Add(copy);
-                }
+                if (!onFavorites()) { saveFavorite(it, it.Name); return; }
+                favorites.Remove(it);
                 try { GalleryItem.SaveFavorites(favorites); }
-                catch (Exception e) { status.Text = "Could not save favorites: " + e.Message; return; }
-                if (catBox.SelectedIndex == cats.Count) { load(); status.Text = "Removed “" + it.Name + "” from favorites"; }
-                else status.Text = "Saved “" + it.Name + "” to My Favorites (kept on this PC)";
+                catch (Exception e) { favorites.Add(it); status.Text = "Could not save favorites: " + e.Message; return; }
+                load(); status.Text = "Removed “" + it.Name + "” from favorites";
             };
             p.Controls.Add(favBtn);
+
+            // right-click a design: rename or remove it in Favorites, or add it to favorites from any other list
+            var itemMenu = new ContextMenuStrip { ShowImageMargin = false, Renderer = new MenuRenderer() };
+            Action<ListViewItem> rename = delegate (ListViewItem item) { view.LabelEdit = true; item.BeginEdit(); };
+            itemMenu.Opening += delegate (object s, System.ComponentModel.CancelEventArgs e)
+            {
+                itemMenu.Items.Clear();
+                var hit = view.HitTest(view.PointToClient(Cursor.Position)).Item;
+                if (hit == null) { e.Cancel = true; return; }
+                hit.Selected = true; hit.Focused = true;
+                itemMenu.Items.Add("Send to " + P.Name, null, delegate { gallerySend.PerformClick(); });
+                var picked = shown[hit.Index];
+                if (picked.Frames.Count > 0 && Proto.Side(picked.Frames[0]) == 16)
+                    itemMenu.Items.Add("Make 10×10 Copy (Favorites)", null, delegate { save10(picked); });
+                itemMenu.Items.Add("Rename", null, delegate { rename(hit); });
+                var addTo = new ToolStripMenuItem("Add to List");
+                foreach (var n in myLists.Names)
+                {
+                    string ln = n;
+                    if (onList() && cur.Query == ln) continue;
+                    addTo.DropDownItems.Add(ln, null, delegate { addToList(picked, ln); });
+                }
+                addTo.DropDownItems.Add("New List…", null, delegate { string ln = newList(); if (ln != null) addToList(picked, ln); });
+                itemMenu.Items.Add(addTo);
+                if (onList())
+                {
+                    itemMenu.Items.Add("Remove From This List", null, delegate
+                    {
+                        myLists.Items.Remove(picked);
+                        try { myLists.Save(); }
+                        catch (Exception ex) { myLists.Items.Add(picked); status.Text = "Could not save the list: " + ex.Message; return; }
+                        load(); status.Text = "Removed “" + picked.Name + "” from “" + cur.Query + "”";
+                    });
+                }
+                if (onFavorites())
+                {
+                    itemMenu.Items.Add("Remove From Favorites", null, delegate { favBtn.PerformClick(); });
+                    return;
+                }
+                // any other list: offer Remove when this design is already a favorite
+                var it = shown[hit.Index];
+                string sig = Signature(it.Frames);
+                var match = favorites.Find(f => Signature(f.Frames) == sig);
+                if (match == null) itemMenu.Items.Add("Add to Favorites", null, delegate { favBtn.PerformClick(); });
+                else itemMenu.Items.Add("Remove From Favorites", null, delegate
+                {
+                    favorites.RemoveAll(f => Signature(f.Frames) == sig);
+                    try { GalleryItem.SaveFavorites(favorites); }
+                    catch (Exception ex) { favorites.Add(match); status.Text = "Could not save favorites: " + ex.Message; return; }
+                    status.Text = "Removed “" + match.Name + "” from favorites";
+                });
+            };
+            view.ContextMenuStrip = itemMenu;
+            view.KeyDown += delegate (object s, KeyEventArgs e)   // F2 renames too, like in Explorer
+            {
+                if (e.KeyCode == Keys.F2 && view.SelectedItems.Count > 0) rename(view.SelectedItems[0]);
+            };
+            view.AfterLabelEdit += delegate (object s, LabelEditEventArgs e)
+            {
+                view.LabelEdit = false;
+                e.CancelEdit = true;   // the list is redrawn (in A-Z order) from the saved names instead
+                string name = e.Label == null ? "" : e.Label.Trim().Replace("|", "/");
+                if (name.Length == 0 || e.Item >= shown.Count) return;
+                var it = shown[e.Item];
+                string old = it.Name;
+                if (name == old) return;
+                it.Name = name;
+                try
+                {
+                    if (onFavorites()) GalleryItem.SaveFavorites(favorites);
+                    else if (onList()) myLists.Save();
+                    else
+                    {
+                        // any other design: the new name is kept on this PC by how it looks, so it sticks wherever the
+                        // design shows up again; a downloaded one also gets it as its saved name
+                        SaveRename(it, name);
+                        if (it.Key != null) DesignCache.SetName(it.Key, name);
+                    }
+                }
+                catch (Exception ex) { it.Name = old; status.Text = "Could not save the name: " + ex.Message; return; }
+                BeginInvoke((Action)delegate { load(); status.Text = "Renamed “" + old + "” to “" + name + "”"; });
+            };
+
+            // "Page 3 of 51" on every cloud list; built-in lists and favorites show everything at once
+            Action showPaging = delegate
+            {
+                bool cloud = cur.Cloud;
+                prev.Visible = next.Visible = pageLabel.Visible = cloud;
+                favSort.Visible = cur.Kind == "fav" || cur.Kind == "mylist";
+                if (!cloud) return;
+                int total;
+                bool known = totals.TryGetValue(cur.Key, out total);
+                if (!known && !cur.Mine && DesignCache.TryTotal(cur.Key, out total)) { totals[cur.Key] = total; known = true; }
+                int pages = known ? Math.Max(1, (total + DivoomCloud.PageSize - 1) / DivoomCloud.PageSize) : 0;
+                pageLabel.Text = "Page " + (cloudPage + 1) + " of " + (known ? pages.ToString("N0") + (total >= 10000 ? "+" : "") : "…");
+                prev.Enabled = cloudPage > 0;
+                next.Enabled = !known || cloudPage + 1 < pages;
+            };
+
             load = delegate
             {
                 int gen = ++generation;
                 clearView();
-                int sel = catBox.SelectedIndex;
-                bool cloud = sel > cats.Count, fav = sel == cats.Count;
-                prev.Visible = next.Visible = pageLabel.Visible = cloud;
-                favBtn.Text = fav ? "Remove From Favorites" : "Add to Favorites";
-                if (fav)
+                if (cur == null) return;
+                var src = cur;
+                title.Text = src.Kind == "search" ? "Divoom search: “" + src.Query + "”" : src.Title.Replace("★  ", "").Replace("▸  ", "");
+                favBtn.Text = src.Kind == "fav" ? "Remove From Favorites" : "Add to Favorites";
+                showPaging();
+                if (src.Kind == "fav")
                 {
                     view.BeginUpdate();
-                    foreach (var it in SortedUnique(favorites, false)) addItem(it);
+                    var mine = favorites.FindAll(f => f.Frames.Count > 0 && Proto.Side(f.Frames[0]) == src.Arg);   // oldest first, as saved
+                    var order = cfg.FavoriteSort == 0 ? SortedUnique(mine, false) : mine;
+                    if (cfg.FavoriteSort == 1) order.Reverse();
+                    foreach (var it in order) addItem(it);
                     view.EndUpdate();
-                    status.Text = favorites.Count == 0 ? "No favorites yet: select a design and press Add to Favorites" : favorites.Count + " favorites";
+                    string size = src.Arg + "×" + src.Arg;
+                    status.Text = mine.Count == 0 ? "No " + size + " favorites yet: right-click a design anywhere and choose Add to Favorites"
+                        : mine.Count + " " + size + " favorite" + (mine.Count == 1 ? "" : "s");
                     return;
                 }
-                if (!cloud)
+                if (src.Kind == "mylist")
                 {
                     view.BeginUpdate();
-                    foreach (var it in SortedUnique(items.FindAll(i => i.Category == cats[sel]))) addItem(it);
+                    var inList = myLists.In(src.Query);   // oldest first, as added
+                    var order = cfg.FavoriteSort == 0 ? SortedUnique(inList, false) : inList;
+                    if (cfg.FavoriteSort == 1) order.Reverse();
+                    foreach (var it in order) addItem(it);
                     view.EndUpdate();
+                    status.Text = inList.Count == 0 ? "“" + src.Query + "” is empty: right-click a design anywhere and choose Add to List"
+                        : inList.Count + " design" + (inList.Count == 1 ? "" : "s") + " in “" + src.Query + "”";
                     return;
                 }
-                int src = sel - cats.Count - 1, page = cloudPage;
-                // "3 of 51"; the total is counted in the background the first time a source is opened
-                int pages;
-                bool known = pageCounts.TryGetValue(src, out pages);
-                pageLabel.Text = (page + 1) + " of " + (known ? pages.ToString() : "…");
-                prev.Enabled = page > 0;
-                next.Enabled = !known || page + 1 < pages;
-                if (!known && counting.Add(src))
+                if (src.Kind == "builtin")
+                {
+                    view.BeginUpdate();
+                    foreach (var it in SortedUnique(items.FindAll(i => i.Category == src.Query))) addItem(it);
+                    view.EndUpdate();
+                    status.Text = pageItems.Count + " built-in designs";
+                    return;
+                }
+                if ((src.Kind == "likes" || src.Kind == "uploads") && !DivoomAccount.SignedIn)
+                {
+                    status.Text = "Sign in with the Divoom Account button (bottom left) to see your " + (src.Kind == "likes" ? "likes" : "uploads");
+                    return;
+                }
+                int page = cloudPage;
+                if (src.Kind == "classic" && !totals.ContainsKey(src.Key) && counting.Add(src.Key))
                     ThreadPool.QueueUserWorkItem(delegate
                     {
-                        int total = -1;
-                        try { total = DivoomCloud.Count(CloudCategory[src], src < 3); } catch (Exception) { }
-                        try
-                        {
-                            BeginInvoke((Action)delegate
-                            {
-                                counting.Remove(src);
-                                if (total < 0) return;   // offline: keep showing just the page number
-                                int n = Math.Max(1, (total + DivoomCloud.PageSize - 1) / DivoomCloud.PageSize);
-                                pageCounts[src] = n;
-                                if (catBox.SelectedIndex - cats.Count - 1 != src) return;   // moved on to another source
-                                pageLabel.Text = (cloudPage + 1) + " of " + n;
-                                next.Enabled = cloudPage + 1 < n;
-                            });
-                        }
+                        int n = -1;
+                        try { n = ClassicCount(src); } catch (Exception) { }
+                        if (n >= 0) DesignCache.SetTotal(src.Key, n);
+                        try { BeginInvoke((Action)delegate { counting.Remove(src.Key); if (n < 0) return; totals[src.Key] = n; if (cur == src) showPaging(); }); }
                         catch (InvalidOperationException) { }   // window closed meanwhile
                     });
-                string key = src + ":" + page;
+                string key = src.Key + "#" + page + (src.Mine ? "#" + DivoomAccount.UserId : "");
                 List<GalleryItem> cached;
                 if (pageCache.TryGetValue(key, out cached))
                 {
                     view.BeginUpdate();
                     foreach (var it in cached) addItem(it);
                     view.EndUpdate();
-                    status.Text = cached.Count + " designs from the Divoom cloud (duplicates hidden)";
+                    status.Text = pageNotes[key];
                     return;
                 }
-                status.Text = "Loading " + CloudSources[src] + ", page " + (page + 1) + "...";
+                status.Text = "Loading " + title.Text + ", page " + (page + 1) + "...";
+                bool translate = english.Checked;
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     try
                     {
-                        var list = DivoomCloud.List(CloudCategory[src], src < 3, page);
+                        int total;
+                        var list = CloudList(src, page, out total);
+                        // how long the list is: LaMetric says, and so do the account's own
+                        // lists; Divoom's other lists always claim 10,000, so those are measured once in the background
+                        bool lastPage = src.Kind != "classic" && page == 0 && list.Count == 0;
+                        bool told = src.Kind == "lametric" || ((src.Kind == "likes" || src.Kind == "uploads") && total >= 0 && total < 10000);
+                        if (lastPage) total = page * DivoomCloud.PageSize + list.Count;
+                        if (lastPage || told) BeginInvoke((Action)delegate { totals[src.Key] = total; if (cur == src) showPaging(); });
+                        else if (src.Kind != "classic") BeginInvoke((Action)delegate
+                        {
+                            if (totals.ContainsKey(src.Key) || !counting.Add(src.Key)) return;
+                            ThreadPool.QueueUserWorkItem(delegate
+                            {
+                                int n = -1;
+                                try { n = MeasureTotal(pg => { int t; return CloudList(src, pg, out t).Count; }); } catch (Exception) { }
+                                if (n >= 0 && !src.Mine) DesignCache.SetTotal(src.Key, n);
+                                try { BeginInvoke((Action)delegate { counting.Remove(src.Key); if (n < 0) return; totals[src.Key] = n; if (cur == src) showPaging(); }); }
+                                catch (InvalidOperationException) { }
+                            });
+                        });
+                        // English names: a design already saved on this PC keeps the English name saved with it; the
+                        // rest are tidied and put into English in one go, and saved with the design once it loads
+                        var names = new List<string>();
+                        var savedName = new bool[list.Count];
+                        var ask = new List<string>();
+                        for (int i = 0; i < list.Count; i++)
+                        {
+                            string known = translate ? DesignCache.Name(DesignCache.KeyOf(list[i].Id)) : null;
+                            savedName[i] = known != null;
+                            names.Add(known ?? GalleryNames.Clean(list[i].Name));
+                            if (known == null) ask.Add(names[i]);
+                        }
+                        GalleryNames.TranslateOn = translate;
+                        bool translated = false;
+                        if (ask.Count > 0)
+                        {
+                            ask = GalleryNames.Translate(ask, out translated);
+                            for (int i = 0, k = 0; i < list.Count; i++) if (!savedName[i]) names[i] = ask[k++];
+                        }
                         var kept = new List<GalleryItem>();
                         var mine = new HashSet<string>();
                         int dupes = 0;
-                        foreach (var e in list)
+                        for (int i = 0; i < list.Count; i++)
                         {
+                            var e = list[i];
                             if (gen != generation) return;
                             List<int[]> fr;
                             lock (downloads)
                                 if (!downloads.TryGetValue(e.Id, out fr))
                                 {
-                                    try { fr = DivoomCloud.Frames(e.Id); } catch (Exception) { continue; }
+                                    try { fr = CloudFrames(e.Id); } catch (Exception) { continue; }
                                     downloads[e.Id] = fr;
                                 }
-                            // duplicates are judged by how they look on the box (after cropping and color snapping)
-                            string sig = Signature(fr), nameKey = NameKey(e.Name);
+                            // a duplicate looks the same as one already shown, or (except in search results and the
+                            // account's own lists) has the same name as another on this page
+                            string sig = Signature(fr), name = GalleryNames.NoYears(names[i]), nameKey = src.KeepNames || name.Length == 0 ? "" : NameKey(name);
                             bool dup;
-                            lock (seen) dup = seen.Contains(sig) || (nameKey.Length > 0 && seen.Contains(nameKey));
+                            lock (seen) dup = seen.Contains(sig);
                             if (dup || !mine.Add(sig) || (nameKey.Length > 0 && !mine.Add(nameKey))) { dupes++; continue; }
-                            var it = new GalleryItem { Category = "Cloud", Name = e.Name };
+                            var it = new GalleryItem { Category = "Cloud", Name = name.Length > 0 ? name : "Untitled" };
+                            if (translated && !savedName[i]) DesignCache.SetName(DesignCache.KeyOf(e.Id), name);   // the English name, not the original ("" = untitled)
+                            if (e.Id.StartsWith(DivoomCloud16.Prefix)) it.Ms = DivoomCloud16.MsOf(e.Id.Substring(DivoomCloud16.Prefix.Length));
                             foreach (var f in Distinct(fr)) it.Frames.Add(f);
+                            it.Key = DesignCache.KeyOf(e.Id);
+                            Renamed(it);
+                            UpdateYear(it, e.Name + " " + name);
                             kept.Add(it);
                             BeginInvoke((Action)delegate { if (gen == generation) addItem(it); });
                         }
                         if (gen != generation) return;
                         // only a fully loaded page counts toward "already seen", so a cancelled load never hides anything
-                        lock (seen) foreach (var sig in mine) seen.Add(sig);
-                        kept = SortedUnique(kept);
-                        BeginInvoke((Action)delegate
-                        {
-                            pageCache[key] = kept;
-                            if (gen != generation) return;
-                            // items appeared as they downloaded; now put the page in A-Z order
-                            view.BeginUpdate();
-                            clearView();
-                            foreach (var it in kept) addItem(it);
-                            view.EndUpdate();
-                        });
-                        SetStatus(kept.Count + " designs from the Divoom cloud" + (dupes > 0 ? " (" + dupes + " duplicates hidden)" : "") +
-                                  " — 11×11 art cropped to 10×10");
+                        if (!src.Mine) lock (seen) foreach (var sig in mine) if (!sig.StartsWith("name:")) seen.Add(sig);
+                        string kind = src.Kind == "lametric" ? "8×8 icons, centered" : src.Kind == "classic" ? "11×11 art cropped to 10×10" :
+                                      "16×16 art" + (P.Box.Size == 16 ? "" : " (squeezed to 10×10 on an AuraBox)");
+                        string note = kept.Count + " designs" + (dupes > 0 ? ", " + dupes + " duplicates hidden" : "") + "  ·  " + kind;
+                        BeginInvoke((Action)delegate { pageCache[key] = kept; pageNotes[key] = note; });
+                        string trouble = translate ? GalleryNames.Problem : null;
+                        if (trouble != null && !toldTranslate) { toldTranslate = true; SetStatus(trouble); }
+                        else SetStatus(note);
+                        if (src.Kind != "lametric" || list.Count > 0) Prefetch(src, page + 1, () => gen == generation);
                     }
-                    catch (Exception ex) { SetStatus("Divoom cloud unavailable: " + ex.Message); }
+                    catch (Exception ex) { SetStatus(title.Text + " unavailable: " + ex.Message); }
                 });
             };
-            catBox.SelectedIndexChanged += delegate { cloudPage = 0; load(); };
+            nav.SelectedIndexChanged += delegate
+            {
+                if (navQuiet) return;
+                var s = nav.SelectedItem as GallerySource;
+                if (s == null) return;
+                if (s.Kind == "header") { nav.SelectedIndex = Math.Min(nav.Items.Count - 1, nav.SelectedIndex + 1); return; }   // skip to the first list under it
+                if (s.Kind == "newlist")
+                {
+                    string made = newList();
+                    if (made == null) { navQuiet = true; nav.SelectedItem = cur; navQuiet = false; return; }
+                    selectList(made);
+                    return;
+                }
+                if (s == cur) return;
+                cur = s; cloudPage = 0;
+                if (search.Text.Length > 0) { searching = true; search.Text = ""; searching = false; }
+                load();
+            };
+            var navMenu = new ContextMenuStrip { ShowImageMargin = false, Renderer = new MenuRenderer() };
+            navMenu.Opening += delegate (object o, System.ComponentModel.CancelEventArgs e)
+            {
+                navMenu.Items.Clear();
+                int k = nav.IndexFromPoint(nav.PointToClient(Cursor.Position));
+                var s = k >= 0 ? nav.Items[k] as GallerySource : null;
+                if (s == null || s.Kind != "mylist") { e.Cancel = true; return; }
+                string n = s.Query;
+                navMenu.Items.Add("Rename List…", null, delegate
+                {
+                    string to = AskText("Rename List", "New name for “" + n + "”:", n);
+                    if (to == null) return;
+                    to = to.Trim().Replace("|", "/");
+                    if (to.Length == 0 || to == n) return;
+                    if (myLists.Names.Contains(to)) { status.Text = "There is already a list called “" + to + "”"; return; }
+                    myLists.Names[myLists.Names.IndexOf(n)] = to;
+                    foreach (var it in myLists.Items) if (it.Category == n) it.Category = to;
+                    try { myLists.Save(); } catch (Exception ex) { status.Text = "Could not save the list: " + ex.Message; return; }
+                    bool showing = onList() && cur.Query == n;
+                    refreshLists();
+                    if (showing) { cur = null; selectList(to); }
+                    status.Text = "Renamed the list “" + n + "” to “" + to + "”";
+                });
+                navMenu.Items.Add("Delete List", null, delegate
+                {
+                    int count = myLists.In(n).Count;
+                    if (MessageBox.Show(this, "Delete the list “" + n + "”" + (count > 0 ? " and the " + count + " design" + (count == 1 ? "" : "s") + " in it" : "") +
+                                        "?\r\n\r\nDesigns you also saved to Favorites or other lists stay there.", "Delete List",
+                                        MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+                    myLists.Names.Remove(n);
+                    myLists.Items.RemoveAll(it => it.Category == n);
+                    try { myLists.Save(); } catch (Exception ex) { status.Text = "Could not save the lists: " + ex.Message; return; }
+                    bool showing = onList() && cur.Query == n;
+                    refreshLists();
+                    if (showing) { cur = null; nav.SelectedItem = sources.Find(x => x.Kind == "fav"); }
+                    status.Text = "Deleted the list “" + n + "”";
+                });
+            };
+            nav.ContextMenuStrip = navMenu;
+            // Enter: search all of Divoom's 16 x 16 art; the results appear as a list at the top
+            search.KeyDown += delegate (object s, KeyEventArgs e)
+            {
+                if (e.KeyCode != Keys.Enter) return;
+                e.SuppressKeyPress = true;
+                string words = search.Text.Trim();
+                if (words.Length == 0) return;
+                if (searchSource == null)
+                {
+                    nav.Items.Insert(0, new GallerySource { Title = "SEARCH", Kind = "header" });
+                    searchSource = new GallerySource { Kind = "search" };
+                    nav.Items.Insert(1, searchSource);
+                }
+                searchSource.Query = words; searchSource.Title = "“" + words + "”";
+                nav.Invalidate();
+                searching = true; search.Text = ""; searching = false;
+                cur = null; cloudPage = 0;
+                nav.SelectedIndex = 1;
+                if (cur != searchSource) { cur = searchSource; load(); }
+            };
+            english.CheckedChanged += delegate
+            {
+                cfg.TranslateNames = english.Checked; SaveSettings();
+                pageCache.Clear(); load();
+            };
             prev.Click += delegate { if (cloudPage > 0) { cloudPage--; load(); } };
             next.Click += delegate { cloudPage++; load(); };
+            accountChanged += delegate { if (cur != null && (cur.Kind == "likes" || cur.Kind == "uploads")) { pageCache.Clear(); load(); } };
 
-            // animate the selected animation's thumbnail
+            // animate the thumbnails: every animated one in view (at its own speed: a Divoom design's time per frame, else
+            // a quarter second), or with animations paused just the selected one
+            var frameAt = new Dictionary<GalleryItem, int>();
+            var dueAt = new Dictionary<GalleryItem, DateTime>();
+            preview.Interval = 60;
             preview.Tick += delegate
             {
-                if (view.SelectedIndices.Count == 0) return;
-                int i = view.SelectedIndices[0];
-                if (i >= shown.Count) return;
-                var it = shown[i];
-                if (it.Frames.Count < 2) return;
-                previewFrame = (previewFrame + 1) % it.Frames.Count;
-                images.Images[i] = Proto.Render(it.Frames[previewFrame], Math.Max(1, thumb / 10));
-                view.Invalidate(view.Items[i].Bounds);
+                if (!p.Visible || shown.Count == 0 || view.Items.Count != shown.Count) return;
+                var now = DateTime.Now;
+                var area = view.ClientRectangle;
+                int sel = view.SelectedIndices.Count > 0 ? view.SelectedIndices[0] : -1;
+                for (int i = 0; i < shown.Count; i++)
+                {
+                    var it = shown[i];
+                    if (it.Frames.Count < 2 || (!animateAll && i != sel)) continue;
+                    DateTime due;
+                    if (dueAt.TryGetValue(it, out due) && now < due) continue;
+                    var r = view.GetItemRect(i, ItemBoundsPortion.Icon);
+                    if (!r.IntersectsWith(area)) continue;   // scrolled out of view
+                    int f; frameAt.TryGetValue(it, out f);
+                    f = (f + 1) % it.Frames.Count;
+                    frameAt[it] = f;
+                    dueAt[it] = now.AddMilliseconds(Math.Max(80, it.Ms > 0 ? it.Ms : 250));
+                    images.Images[i] = Proto.Render(it.Frames[f], Math.Max(1, thumb / 10));   // the list holds on to the picture: not disposed here
+                    view.Invalidate(r);
+                }
+            };
+            animBtn.Click += delegate
+            {
+                animateAll = !animateAll; cfg.GalleryAnimate = animateAll; SaveSettings();
+                animBtn.Text = animateAll ? "❚❚  Pause Animations" : "▶  Play Animations";
+                animBtn.AccessibleName = animateAll ? "Pause animations" : "Play animations";
+                if (!animateAll)   // back to each design's first frame, except the selected one
+                    for (int i = 0; i < shown.Count; i++)
+                        if (shown[i].Frames.Count > 1 && !view.Items[i].Selected) { images.Images[i] = Proto.Render(shown[i].Frames[BestFrame(shown[i])], Math.Max(1, thumb / 10)); frameAt.Remove(shown[i]); }
+                view.Invalidate();
             };
             preview.Start();
 
@@ -1357,21 +2394,33 @@ namespace AuraBoxControl
                 if (view.SelectedIndices.Count == 0) { status.Text = "Pick a design first"; return; }
                 var it = shown[view.SelectedIndices[0]];
                 StopRotationForManual();
-                if (it.IsAnimation) SendAnimation(Sample(it.Frames));
+                var tv = box as Tivoo;
+                if (it.IsAnimation && tv != null)   // the Tivoo plays long animations by itself, at the design's own speed
+                {
+                    var fr = Sample(it.Frames, Tivoo.MaxFrames);
+                    int ms = it.Ms > 0 ? it.Ms : (int)delayBox.Value * 100;
+                    Run(delegate { tv.ShowAnimationMs(fr, ms); }, "Sent “" + it.Name + "” (" + fr.Count + " frames)");
+                }
+                else if (it.IsAnimation) SendAnimation(Sample(it.Frames));
                 else { var px = it.Frames[0]; Run(delegate { box.ShowImage(px); }, "Sent “" + it.Name + "”"); }
             };
             view.ItemActivate += delegate { send(); };
 
-            p.Controls.Add(Btn("Send to AuraBox", 0, 462, 150, send, true));
-            p.Controls.Add(Btn("Edit", 158, 462, 110, delegate
+            gallerySend = Btn("Send to " + P.Name, 0, 462, 176, send, true);
+            gallerySend.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            p.Controls.Add(gallerySend);
+            Button editBtn;
+            p.Controls.Add(editBtn = Btn("Edit", 186, 462, 90, delegate
             {
                 if (view.SelectedIndices.Count == 0) return;
                 var it = shown[view.SelectedIndices[0]];
-                grid.SetAll(it.Frames[0]);
-                if (it.IsAnimation) { frames.Clear(); foreach (var f in Sample(it.Frames)) frames.Add((int[])f.Clone()); RefreshFrames(); }
+                grid.SetAll(Proto.To10(it.Frames[0]));   // drawing is 10 x 10: 16 x 16 designs are squeezed
+                if (it.IsAnimation) { frames.Clear(); foreach (var f in Sample(it.Frames)) frames.Add(Proto.To10(f)); RefreshFrames(); }
                 status.Text = "Loaded “" + it.Name + "” into Draw & Animate" + (it.IsAnimation ? " (picture and frames)" : "");
             }));
-            var playAll = Btn("Play All Frames From PC", 276, 462, 200, null);
+            editBtn.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            var playAll = Btn("Play All Frames From PC", 284, 462, 200, null);
+            playAll.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             playAll.Click += delegate
             {
                 if (job != null && playingBtn == playAll) { TogglePlay(playAll, null, "Animation"); return; }
@@ -1384,9 +2433,174 @@ namespace AuraBoxControl
                            "“" + it.Name + "” (" + all.Count + " frames)");
             };
             p.Controls.Add(playAll);
-            p.Controls.Add(Note("Double-click sends to the box (max 8 frames). Longer animations: Play All Frames From PC.", 2, 499));
-            if (catBox.Items.Count > 0) catBox.SelectedIndex = 0;
+            var tip = Note("Double-click sends to the display (AuraBox: 12 frames, Tivoo: 60). Right-click: rename, favorites, lists.", 2, 499);
+            tip.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            p.Controls.Add(tip);
+            // start where the art fits the display: Divoom 16 x 16 on a Tivoo, the built-in designs on an AuraBox
+            Func<GallerySource> start = () => sources.Find(s => P.Box.Size == 16 ? s.Kind == "d16" : s.Kind == "builtin") ?? sources.Find(s => s.Kind == "fav" && s.Arg == P.Box.Size);
+            p.VisibleChanged += delegate { if (p.Visible && cur == null) nav.SelectedItem = start(); };   // first opened
             return p;
+        }
+
+        // lists the person makes and names (under Mine in the Gallery): settings\lists.txt holds an "L|name" line for each
+        // list, in order, then each design as a favorites-style line whose category is its list's name
+        class MyLists
+        {
+            public List<string> Names = new List<string>();
+            public List<GalleryItem> Items = new List<GalleryItem>();
+            static string PathOf { get { return Settings.DataFile("lists.txt"); } }
+
+            public List<GalleryItem> In(string name) { return Items.FindAll(i => i.Category == name); }
+
+            public static MyLists Load()
+            {
+                var m = new MyLists();
+                try
+                {
+                    if (!File.Exists(PathOf)) return m;
+                    foreach (string line in File.ReadAllLines(PathOf, Encoding.UTF8))
+                    {
+                        if (line.StartsWith("L|")) { string n = line.Substring(2); if (n.Length > 0 && !m.Names.Contains(n)) m.Names.Add(n); continue; }
+                        var it = GalleryItem.Parse(line);
+                        if (it == null) continue;
+                        if (!m.Names.Contains(it.Category)) m.Names.Add(it.Category);
+                        m.Items.Add(it);
+                    }
+                }
+                catch (Exception) { }
+                return m;
+            }
+
+            public void Save()
+            {
+                var lines = new List<string>();
+                foreach (var n in Names) lines.Add("L|" + n);
+                foreach (var it in Items) lines.Add(it.Format(it.Category));
+                Directory.CreateDirectory(Path.GetDirectoryName(PathOf));
+                File.WriteAllLines(PathOf, lines.ToArray(), Encoding.UTF8);
+            }
+        }
+
+        // asks for a line of text (a list's name); null when cancelled
+        string AskText(string title, string label, string initial)
+        {
+            using (var f = new Form { Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                                      StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(380, 120), Font = Font, ShowInTaskbar = false })
+            {
+                f.Controls.Add(new Label { Text = label, Location = new Point(14, 14), Size = new Size(352, 20), UseMnemonic = false, AutoEllipsis = true });
+                var box = new TextBox { Location = new Point(14, 40), Width = 352, Text = initial ?? "" };
+                f.Controls.Add(box);
+                var ok = new Button { Text = "OK", Location = new Point(186, 78), Size = new Size(86, 28), DialogResult = DialogResult.OK };
+                var cancel = new Button { Text = "Cancel", Location = new Point(280, 78), Size = new Size(86, 28), DialogResult = DialogResult.Cancel };
+                f.Controls.Add(ok); f.Controls.Add(cancel);
+                f.AcceptButton = ok; f.CancelButton = cancel;
+                Theme.Prepare(f);
+                return f.ShowDialog(this) == DialogResult.OK ? box.Text : null;
+            }
+        }
+
+        // the window's Divoom account changed (signed in or out): the Gallery reloads My Likes / My Uploads
+        Action accountChanged = delegate { };
+
+        // sign in to the Divoom app account (for My Likes and My Uploads), or choose a password for one made with an
+        // emailed code
+        void DivoomAccountDialog()
+        {
+            using (var f = new Form { Text = "Divoom Account", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                                      StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(440, 330), Font = Font, ShowInTaskbar = false })
+            {
+                var info = new Label { Location = new Point(14, 12), Size = new Size(412, 36), UseMnemonic = false };
+                var email = new TextBox { Location = new Point(110, 56), Width = 316, Text = DivoomAccount.Email.Length > 0 ? DivoomAccount.Email : cfg.DivoomEmail };
+                var pass = new TextBox { Location = new Point(110, 88), Width = 200, UseSystemPasswordChar = true };
+                var signIn = new Button { Text = "Sign In", Location = new Point(318, 86), Size = new Size(108, 28) };
+                var signOut = new Button { Text = "Sign Out", Location = new Point(318, 86), Size = new Size(108, 28) };
+                var codeNote = new Label { Location = new Point(14, 136), Size = new Size(412, 50), Tag = "subtle", UseMnemonic = false,
+                    Text = "No password? Accounts made with an emailed code have none. Divoom can email you a code to choose one " +
+                           "(the same as \"Forgot password\" in the Divoom app)." };
+                var sendCode = new Button { Text = "Email Me a Code", Location = new Point(14, 190), Size = new Size(150, 28) };
+                var code = new TextBox { Location = new Point(110, 230), Width = 100 };
+                var newPass = new TextBox { Location = new Point(110, 262), Width = 200, UseSystemPasswordChar = true };
+                var setPass = new Button { Text = "Set Password and Sign In", Location = new Point(14, 294), Size = new Size(200, 28) };
+                var close = new Button { Text = "Close", Location = new Point(346, 294), Size = new Size(80, 28), DialogResult = DialogResult.Cancel };
+                f.CancelButton = close;
+                foreach (Control c in new Control[] { info, email, pass, signIn, signOut, codeNote, sendCode, code, newPass, setPass, close,
+                    new Label { Text = "Email:", Location = new Point(14, 59), AutoSize = true }, new Label { Text = "Password:", Location = new Point(14, 91), AutoSize = true },
+                    new Label { Text = "Code:", Location = new Point(14, 233), AutoSize = true }, new Label { Text = "New password:", Location = new Point(14, 265), AutoSize = true } })
+                    f.Controls.Add(c);
+                Action refresh = delegate
+                {
+                    bool on = DivoomAccount.SignedIn;
+                    info.Text = on ? "Signed in as " + DivoomAccount.Email + ". The Gallery's My Divoom Likes and My Divoom Uploads use this account."
+                                   : "Sign in to the account you use in the Divoom phone app to see your likes and uploads in the Gallery. Your password is not saved.";
+                    signIn.Visible = !on; signOut.Visible = on; pass.Enabled = !on; email.Enabled = !on;
+                    foreach (Control c in new Control[] { codeNote, sendCode, code, newPass, setPass }) c.Enabled = !on;
+                };
+                Action<Action, string> busy = delegate (Action work, string done)
+                {
+                    f.UseWaitCursor = true; f.Enabled = false;
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        string err = null;
+                        try { work(); } catch (Exception ex) { err = ex.Message; }
+                        try
+                        {
+                            f.BeginInvoke((Action)delegate
+                            {
+                                f.UseWaitCursor = false; f.Enabled = true;
+                                if (err != null) { MessageBox.Show(f, err, "Divoom Account", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                                if (DivoomAccount.SignedIn)
+                                {
+                                    cfg.DivoomEmail = DivoomAccount.Email; cfg.DivoomUserId = DivoomAccount.UserId; cfg.DivoomToken = DivoomAccount.Token;
+                                    SaveSettings(); accountChanged();
+                                }
+                                refresh();
+                                if (done != null) status.Text = done;
+                            });
+                        }
+                        catch (InvalidOperationException) { }   // the dialog was closed meanwhile
+                    });
+                };
+                signIn.Click += delegate
+                {
+                    string em = email.Text.Trim(), pw = pass.Text;
+                    if (em.Length == 0 || pw.Length == 0) { MessageBox.Show(f, "Type your email and password.", "Divoom Account"); return; }
+                    busy(delegate { DivoomAccount.SignIn(em, pw); }, "Signed in to Divoom as " + em);
+                };
+                signOut.Click += delegate
+                {
+                    DivoomAccount.SignOut(); cfg.DivoomUserId = 0; cfg.DivoomToken = 0; SaveSettings(); accountChanged(); refresh();
+                    status.Text = "Signed out of Divoom";
+                };
+                sendCode.Click += delegate
+                {
+                    string em = email.Text.Trim();
+                    if (em.Length == 0) { MessageBox.Show(f, "Type your email first.", "Divoom Account"); return; }
+                    busy(delegate { DivoomAccount.SendCode(em); }, "Divoom emailed a code to " + em);
+                };
+                setPass.Click += delegate
+                {
+                    string em = email.Text.Trim(), pw = newPass.Text; int c;
+                    if (em.Length == 0 || !int.TryParse(code.Text.Trim(), out c) || pw.Length < 6)
+                    { MessageBox.Show(f, "Type your email, the code from the email, and a new password of at least 6 characters.", "Divoom Account"); return; }
+                    busy(delegate { DivoomAccount.SetPassword(em, c, pw); DivoomAccount.SignIn(em, pw); }, "Password set and signed in to Divoom");
+                };
+                refresh();
+                Theme.Prepare(f);
+                f.ShowDialog(this);
+            }
+        }
+
+        // the frame a still thumbnail shows: the one with the most lit pixels (many animations start dark or blank)
+        static int BestFrame(GalleryItem it)
+        {
+            int best = 0, most = -1;
+            for (int f = 0; f < it.Frames.Count; f++)
+            {
+                int lit = 0;
+                foreach (int c in it.Frames[f]) if (c != 0) lit++;
+                if (lit > most) { most = lit; best = f; }
+            }
+            return best;
         }
 
         // Gallery lists run A to Z by name, and designs that share a name (ignoring case) show only once.
@@ -1408,6 +2622,93 @@ namespace AuraBoxControl
             return result;
         }
 
+        // a year drawn in a downloaded design ("Happy New Year 2021") brought up to date when it can be read (names: its
+        // original and English names)
+        static void UpdateYear(GalleryItem it, string names)
+        {
+            int year = YearArt.YearIn(names);
+            if (year == 0 && YearArt.IsNewYear(names)) year = YearArt.YearDrawn(it.Frames);   // "New Year" showing 2020
+            if (year == 0) return;
+            var newer = YearArt.Update(it.Frames, year, YearArt.TargetFor(names));
+            if (newer != null) it.Frames = newer;
+        }
+
+        // the next page of a Divoom list downloaded in the background (into the design cache) while the person looks at
+        // this one, so Next opens at once; stops as soon as another list or page is opened
+        static void Prefetch(GallerySource src, int page, Func<bool> still)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    Thread.Sleep(1500);   // let the page on screen settle first
+                    if (!still()) return;
+                    int total;
+                    var list = CloudList(src, page, out total);
+                    foreach (var e in list)
+                    {
+                        if (!still()) return;
+                        try { CloudFrames(e.Id); } catch (Exception) { }
+                        Thread.Sleep(150);   // gently: Divoom refuses bursts
+                    }
+                }
+                catch (Exception) { }
+            });
+        }
+
+        // names given to designs outside Favorites (built-in and downloaded ones), by look: settings\renames.txt holds
+        // "fingerprint<TAB>name" lines, the fingerprint being an MD5 of the design's Signature
+        static Dictionary<string, string> renames;
+        static readonly object renamesGate = new object();
+
+        static string LookOf(GalleryItem it)
+        {
+            if (it.Look == null)
+                using (var md5 = System.Security.Cryptography.MD5.Create())
+                    it.Look = BitConverter.ToString(md5.ComputeHash(Encoding.UTF8.GetBytes(Signature(it.Frames)))).Replace("-", "").ToLowerInvariant();
+            return it.Look;
+        }
+
+        static void LoadRenames()
+        {
+            if (renames != null) return;
+            renames = new Dictionary<string, string>();
+            try
+            {
+                string path = Settings.DataFile("renames.txt");
+                if (File.Exists(path))
+                    foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
+                    {
+                        int tab = line.IndexOf('\t');
+                        if (tab > 0) renames[line.Substring(0, tab)] = line.Substring(tab + 1);
+                    }
+            }
+            catch (Exception) { }
+        }
+
+        // gives the design the name it was renamed to, if any
+        static void Renamed(GalleryItem it)
+        {
+            if (it.Frames.Count == 0) return;
+            string look = LookOf(it), name;
+            lock (renamesGate) { LoadRenames(); if (renames.TryGetValue(look, out name)) it.Name = name; }
+        }
+
+        static void SaveRename(GalleryItem it, string name)
+        {
+            string look = LookOf(it);
+            lock (renamesGate)
+            {
+                LoadRenames();
+                renames[look] = name.Replace("\t", " ").Replace("\r", " ").Replace("\n", " ");
+                var lines = new List<string>();
+                foreach (var kv in renames) lines.Add(kv.Key + "\t" + kv.Value);
+                string path = Settings.DataFile("renames.txt");
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllLines(path, lines.ToArray(), Encoding.UTF8);
+            }
+        }
+
         // what an item looks like on the box; an animation whose frames are all identical counts as a still picture
         static string Signature(List<int[]> fr)
         {
@@ -1423,20 +2724,23 @@ namespace AuraBoxControl
             return new List<int[]> { fr[0] };
         }
 
-        // the AuraBox holds 8 frames: longer animations are sampled evenly
-        static List<int[]> Sample(List<int[]> all)
+        // the AuraBox holds 12 frames (the Tivoo 60): longer animations are sampled evenly
+        static List<int[]> Sample(List<int[]> all, int max = AuraBox.MaxFrames)
         {
-            if (all.Count <= 8) return all;
+            if (all.Count <= max) return all;
             var list = new List<int[]>();
-            for (int k = 0; k < 8; k++) list.Add(all[k * all.Count / 8]);
+            for (int k = 0; k < max; k++) list.Add(all[k * all.Count / max]);
             return list;
         }
+
+        Button gallerySend;
 
         // ---------- live animations: generated on this PC frame by frame, each with its own speed ----------
         Panel BuildLivePage()
         {
             var p = NewPage();
             var live = NewCard("Played From This PC", 0, 0, W, 250);
+            Func<int[]> sim = null;
             var pick = new ListBox { Location = new Point(12, 40), Size = new Size(190, 196), IntegralHeight = false };
             AccentList(pick);
             foreach (var la in LiveAnims) pick.Items.Add(la.Name);
@@ -1444,32 +2748,78 @@ namespace AuraBoxControl
             var title = new Label { Location = new Point(218, 38), Size = new Size(W - 218 - 180, 26), Font = Theme.Semibold(12f), UseMnemonic = false };
             var about = new Label { Location = new Point(218, 68), Size = new Size(W - 218 - 180, 60) };
             livePlay = Btn("Play", 218, 126, 120, null, true);
-            live.Controls.Add(new Label { Text = "Speed:", Location = new Point(218, 174), AutoSize = true });
+            var speedLabel = new Label { Text = "Speed:", Location = new Point(218, 174), AutoSize = true };
+            live.Controls.Add(speedLabel);
             var speed = new TrackBar { Minimum = 1, Maximum = 10, Location = new Point(270, 166), Width = W - 270 - 186, TickStyle = TickStyle.None };
             var preview = new PixelGrid(15) { Location = new Point(W - 166, 40), ReadOnly = true };
             live.Controls.Add(title); live.Controls.Add(about); live.Controls.Add(livePlay); live.Controls.Add(speed); live.Controls.Add(preview);
             live.Controls.Add(Note("Speed is saved for each one, and also used in the playlist.", 218, 220));
+            var speedNote = (Label)live.Controls[live.Controls.Count - 1];
+            // the Countdown Timer's options, shown only while it is picked: a number of minutes, or a date and time
+            var forMinutes = new RadioButton { Text = "Minutes:", Location = new Point(352, 132), AutoSize = true, Checked = !cfg.CountdownToDate };
+            var minutes = new NumericUpDown { Minimum = 1, Maximum = 99, Value = cfg.CountdownMinutes, Location = new Point(446, 130), Width = 60 };
+            var toDate = new RadioButton { Text = "Until:", Location = new Point(218, 214), AutoSize = true, Checked = cfg.CountdownToDate };
+            var until = new DateTimePicker { Format = DateTimePickerFormat.Custom, Location = new Point(290, 210), Width = 230,
+                                             CustomFormat = H24 ? "MMM d, yyyy  HH:mm" : "MMM d, yyyy  h:mm tt", Value = cfg.CountdownUntil };
+            var countdownControls = new Control[] { forMinutes, minutes, toDate, until };
+            Action countdownChanged = delegate
+            {
+                cfg.CountdownMinutes = Countdown.Minutes = (int)minutes.Value;
+                cfg.CountdownToDate = toDate.Checked;
+                cfg.CountdownUntil = until.Value.Date.AddHours(until.Value.Hour).AddMinutes(until.Value.Minute);
+                Countdown.Until = cfg.CountdownToDate ? cfg.CountdownUntil : DateTime.MinValue;
+                // the playlist gives a timer its whole run and a little of the finish; a date just a minute's look
+                lock (playlistGate)
+                {
+                    var item = PlayItem.Find(dcfg.Playlist, "countdown");
+                    if (item != null) item.Seconds = cfg.CountdownToDate ? 60 : cfg.CountdownMinutes * 60 + 10;
+                }
+                RefreshPlayRows();
+                SaveSettings(); sim = null;
+            };
+            minutes.ValueChanged += delegate { if (!forMinutes.Checked) forMinutes.Checked = true; else countdownChanged(); };
+            until.ValueChanged += delegate { if (!toDate.Checked) toDate.Checked = true; else countdownChanged(); };
+            forMinutes.CheckedChanged += delegate { if (forMinutes.Checked) countdownChanged(); };
+            toDate.CheckedChanged += delegate { if (toDate.Checked) countdownChanged(); };
+            live.Controls.AddRange(countdownControls);
             p.Controls.Add(live);
 
-            Func<int[]> sim = null;
             bool picking = false;
+            // the Heart Monitor's title shows the heart rate its slider sets
+            Action showRate = delegate
+            {
+                if (pick.SelectedIndex < 0) return;
+                var la = LiveAnims[pick.SelectedIndex];
+                title.Text = la.Id == "heart" ? la.Name + "  ·  " + HeartMonitor.Bpm(speed.Value) + " beats a minute" : la.Name;
+            };
             pick.SelectedIndexChanged += delegate
             {
                 if (pick.SelectedIndex < 0) return;
                 var la = LiveAnims[pick.SelectedIndex];
                 title.Text = la.Name; about.Text = la.About; sim = null;
+                foreach (var c in countdownControls) c.Visible = la.Id == "countdown";
+                speedNote.Visible = la.Id != "countdown";
+                speedLabel.Text = la.Id == "heart" ? "Rate:" : "Speed:";
                 picking = true; speed.Value = cfg.SpeedOf(la.Id); picking = false;
+                showRate();
             };
             speed.ValueChanged += delegate
             {
                 if (picking || pick.SelectedIndex < 0) return;
-                cfg.SetSpeed(LiveAnims[pick.SelectedIndex].Id, speed.Value); SaveSettings();
+                string id = LiveAnims[pick.SelectedIndex].Id;
+                cfg.SetSpeed(id, speed.Value); SaveSettings(); speedChanged(id); showRate();
+            };
+            // set on the Playlist page: move this slider too if it shows that animation
+            speedChanged += delegate (string changed)
+            {
+                if (pick.SelectedIndex < 0 || LiveAnims[pick.SelectedIndex].Id != changed || speed.Value == cfg.SpeedOf(changed)) return;
+                picking = true; speed.Value = cfg.SpeedOf(changed); picking = false;
             };
             pick.SelectedIndex = 0;
             livePlay.Click += delegate
             {
                 var la = LiveAnims[pick.SelectedIndex];
-                TogglePlay(livePlay, delegate { StreamLoop(la.Make(), LiveInterval(la.Id), DateTime.MaxValue); }, la.Name);
+                TogglePlay(livePlay, delegate { StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), DateTime.MaxValue); }, la.Name);
             };
 
             // preview the picked animation at its speed while this page is open
@@ -1479,33 +2829,46 @@ namespace AuraBoxControl
             {
                 if (!p.Visible) { sim = null; return; }
                 if (DateTime.Now < nextFrame || pick.SelectedIndex < 0) return;
-                if (sim == null) sim = LiveAnims[pick.SelectedIndex].Make();
+                if (sim == null) sim = MakeFor(LiveAnims[pick.SelectedIndex], sel.Box.Size);
                 preview.SetAll(sim());
-                nextFrame = DateTime.Now.AddSeconds(FrameSeconds(speed.Value));
+                nextFrame = DateTime.Now.AddSeconds(SizePace(sel.Box.Size) * Uneven(LiveFrameSeconds(LiveAnims[pick.SelectedIndex].Id, speed.Value)));
             };
             previewTimer.Start();
+            deviceChanged += delegate { sim = null; };   // another display: preview its version
 
             p.Controls.Add(BuildLavaCard(0, 262));
             return p;
         }
 
         // frame time for a live animation, read on every frame so a speed change applies right away
-        Func<double> LiveInterval(string id) { return () => FrameSeconds(cfg.SpeedOf(id)); }
+        Func<double> LiveInterval(string id) { double k = SizePace(box.Size); return () => k * Uneven(LiveFrameSeconds(id, cfg.SpeedOf(id))); }
+
+        // frame time for a display: things move a pixel a frame, and the Tivoo has 16 pixels across to the AuraBox's 10,
+        // so its frames come 10/16 as far apart to cross the screen in the same time
+        static double SizePace(int size) { return size == 16 ? 10.0 / 16 : 1; }
+
+        // the Heart Monitor's slider sets its heart rate instead, so it always sends frames as fast as it can
+        static double LiveFrameSeconds(string id, int v) { return FrameSeconds(id == "heart" ? 10 : v); }
 
         // seconds per live-animation frame for speed slider value v (1..10)
         static double FrameSeconds(int v) { return (0.42 - v * 0.035) * 0.8; }
 
+        // each frame of a live animation waits a little more or less than the set time (half to one and a half times,
+        // the same on average), so motion has the uneven, lively pace of a hospital scope trace
+        static readonly Random frameRng = new Random();
+        static double Uneven(double seconds) { lock (frameRng) return seconds * (0.5 + frameRng.NextDouble()); }
+
         void SendAnimation(List<int[]> list)
         {
             var copy = new List<int[]>(list); int delay = (int)delayBox.Value;
-            Run(delegate { box.ShowAnimation(copy, delay); }, "Animation sent (" + Math.Min(8, copy.Count) + " frames)");
+            Run(delegate { box.ShowAnimation(copy, delay); }, "Animation sent (" + Math.Min(AuraBox.MaxFrames, copy.Count) + " frames)");
         }
 
         // redraw the frame strip; the picked frame gets an accent-colored rim
         void RefreshFrames()
         {
             if (selFrame >= frames.Count) selFrame = frames.Count - 1;
-            for (int k = 0; k < 8; k++)
+            for (int k = 0; k < frameSlots.Length; k++)
             {
                 if (frameSlots[k] == null) return;
                 frameSlots[k].SetAll(k < frames.Count ? frames[k] : new int[100]);
@@ -1523,9 +2886,10 @@ namespace AuraBoxControl
         {
             while (!jobStop && Before(until))
             {
+                var started = DateTime.Now;
                 int[] px = next();
                 if (!JobSend(delegate { box.ShowImage(px); })) { SetStatus("Waiting for AuraBox connection..."); Wait(5); continue; }
-                Wait(interval());
+                Wait(Math.Max(0, interval() - (DateTime.Now - started).TotalSeconds));   // sending time counts toward the frame
             }
         }
 
@@ -1568,9 +2932,10 @@ namespace AuraBoxControl
             previewTimer.Tick += delegate
             {
                 if (!p.Visible || DateTime.Now < previewNext) return;
-                if (previewStrip == null) { previewStrip = TextArt.Strip(textBox.Text, (string)textFont.SelectedItem); previewOffset = 0; }
+                int rows = sel.Box.Size;   // the preview follows the display picked at the top
+                if (previewStrip == null || previewStrip.GetLength(1) != rows) { previewStrip = TextArt.Strip(textBox.Text, (string)textFont.SelectedItem, rows); previewOffset = 0; }
                 preview.SetAll(TextArt.Window(previewStrip, previewOffset, textColor.Value));
-                previewOffset = (previewOffset + 1) % (previewStrip.GetLength(0) + 11);
+                previewOffset = (previewOffset + 1) % (previewStrip.GetLength(0) + rows + 1);
                 previewNext = DateTime.Now.AddSeconds(0.45 - textSpeed.Value * 0.035);   // the same step time as the box
             };
             previewTimer.Start();
@@ -1578,9 +2943,9 @@ namespace AuraBoxControl
             textPlay = Btn("Play", 190, 176, 120, null, true);
             textPlay.Click += delegate
             {
-                var strip = TextArt.Strip(textBox.Text, (string)textFont.SelectedItem);
+                string text = textBox.Text, font = (string)textFont.SelectedItem;
                 int color = textColor.Value;
-                TogglePlay(textPlay, delegate { MarqueeLoop(strip, color, DateTime.MaxValue); }, "Text");
+                TogglePlay(textPlay, delegate { MarqueeLoop(text, font, color, DateTime.MaxValue); }, "Text");
             };
             card.Controls.Add(textPlay);
             card.Controls.Add(Note("Add emoji from the card below. The message is also the playlist's Scrolling Text item.\r\n" +
@@ -1621,18 +2986,22 @@ namespace AuraBoxControl
             return bmp;
         }
 
-        void MarqueeLoop(int[,] strip, int color, DateTime until)
+        // the message scrolling across the display: 10 rows on the AuraBox, 16 on the Tivoo
+        void MarqueeLoop(string text, string font, int color, DateTime until)
         {
-            int total = strip.GetLength(0) + 10;
+            int[,] strip = TextArt.Strip(text, font, box.Size);
+            int total = strip.GetLength(0) + box.Size;
             while (!jobStop && Before(until))
             {
                 for (int off = 0; off <= total && !jobStop && Before(until); off++)
                 {
+                    var started = DateTime.Now;
                     int[] px = TextArt.Window(strip, off, color);
                     if (!JobSend(delegate { box.ShowImage(px); })) { Wait(5); break; }
                     int speed = 5;
                     if (!OnUi(delegate { speed = textSpeed.Value; })) return;
-                    Wait(0.45 - speed * 0.035);
+                    // 16-row text is wider, so it steps faster to move across in the same time as on the AuraBox
+                    Wait(Math.Max(0, (0.45 - speed * 0.035) * SizePace(box.Size) - (DateTime.Now - started).TotalSeconds));
                 }
             }
         }
@@ -1649,7 +3018,7 @@ namespace AuraBoxControl
             var hours = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(274, 40), Width = 150 };
             hours.Items.AddRange(new object[] { "Like Windows", "12-hour", "24-hour" });
             hours.SelectedIndex = cfg.Clock24 + 1;
-            hours.SelectedIndexChanged += delegate { cfg.Clock24 = clock24 = hours.SelectedIndex - 1; SaveSettings(); };
+            hours.SelectedIndexChanged += delegate { cfg.Clock24 = clock24 = hours.SelectedIndex - 1; ApplyTivooClock(); SaveSettings(); };
             card.Controls.Add(hours);
             tick.Start();
             card.Controls.Add(now);
@@ -1699,13 +3068,15 @@ namespace AuraBoxControl
             lava.Controls.Add(puddle);
             lava.Controls.Add(Btn("Show Lava Clock Now", 12, 124, 190, delegate { PlayLive("lavaclock"); }, true));
             lava.Controls.Add(Note("Uses the 12/24-hour setting on the Clock & Weather page.", 14, 164));
-            LavaClock lavaSim = null; bool lavaH24 = H24;
+            LavaClock lavaSim = null; bool lavaH24 = H24; int lavaSize = 10;
             var lavaTick = new System.Windows.Forms.Timer { Interval = 100 };
             lavaTick.Tick += delegate
             {
                 if (!lava.Visible) { lavaSim = null; return; }   // false while its page is hidden
-                if (lavaSim == null || lavaH24 != H24) { lavaH24 = H24; lavaSim = new LavaClock(lavaH24); }
-                lavaPreview.SetAll(lavaSim.Next());
+                int size = sel.Box.Size;
+                if (lavaSim == null || lavaH24 != H24 || lavaSize != size) { lavaH24 = H24; lavaSize = size; lavaSim = new LavaClock(lavaH24, size); }
+                var f = lavaSim.Next();
+                lavaPreview.SetAll(size == 16 ? Palette16.ToRgb(f) : f);
             };
             lavaTick.Start();
             return lava;
@@ -1721,11 +3092,14 @@ namespace AuraBoxControl
             }
         }
 
+        // the app's own steady clock is for the AuraBox (whose built-in clock blinks); the Tivoo's own clock looks better
+        bool SteadyClock { get { return cfg.SteadyClock && box.Kind == "aurabox"; } }
+
         static int[] ClockFace(DateTime t) { return ClockArt.Face(t, H24, 7, 6); }   // white hours, cyan minutes
 
         void ShowClockNow()
         {
-            if (cfg.SteadyClock) { StartJob(delegate { ClockLoop(DateTime.MaxValue); }); showing = "Clock"; status.Text = "Showing the steady clock"; }
+            if (SteadyClock) { StartJob(delegate { ClockLoop(DateTime.MaxValue); }); showing = "Clock"; status.Text = "Showing the steady clock"; }
             else Run(delegate { box.SetMode(0); }, "Showing the AuraBox clock");
         }
 
@@ -1839,7 +3213,7 @@ namespace AuraBoxControl
         // one weather period now, then back to the clock (or on with the playlist)
         void ShowWeatherNow()
         {
-            bool repeat = rotateBox.Checked;
+            bool repeat = playlistOn;
             StartJob(delegate { PlaylistLoop("weather", repeat); });
         }
 
@@ -1905,14 +3279,21 @@ namespace AuraBoxControl
         {
             var w = GetWeather(false);
             if (w == null) { SetStatus("Weather unavailable — retrying later"); WaitUntil(end); return; }
+            var tv = box as Tivoo;
+            if (tv != null) JobSend(delegate { SendWeatherTo(tv, w); });   // keeps the Tivoo's own clock and weather screen current
             SetStatus("Weather — " + Math.Round(w.Temp) + "°" + w.Unit + ", " + w.Description);
-            var icon = WeatherArt.IconFrames(w);
-            int[] temp = WeatherArt.Temperature(w);
+            // a 16 x 16 display gets the 16 x 16 pictures (palette indexes until sent, then RGB)
+            bool big = box.Size == 16;
+            Func<int[], int[]> ready = px => big ? Palette16.ToRgb(px) : px;
+            var icon = big ? WeatherArt16.IconFrames(w) : WeatherArt.IconFrames(w);
+            int r0x = 0, r0y = 0;
+            int[] temp = big ? WeatherArt16.Temperature(w, 0, 0, out r0x, out r0y) : WeatherArt.Temperature(w);
+            if (big) temp = WeatherArt16.Temperature(w, r0x / 2, r0y / 2, out r0x, out r0y);   // centered
             bool showIcon = true;
             // the temperature drifts and bounces off the edges, starting from a random corner
             var rng = new Random();
             int roomX, roomY;
-            WeatherArt.Temperature(w, 0, 0, out roomX, out roomY);
+            if (big) WeatherArt16.Temperature(w, 0, 0, out roomX, out roomY); else WeatherArt.Temperature(w, 0, 0, out roomX, out roomY);
             int bx = rng.Next(roomX + 1), by = rng.Next(roomY + 1);
             int vx = rng.Next(2) == 0 ? -1 : 1, vy = rng.Next(2) == 0 ? -1 : 1;
             // the icon bounces too, from where it's drawn
@@ -1937,7 +3318,8 @@ namespace AuraBoxControl
                             if (ix + ivx < loX || ix + ivx > hiX) ivx = -ivx; ix += ivx;
                             if (iy + ivy < loY || iy + ivy > hiY) ivy = -ivy; iy += ivy;
                         }
-                        ok = JobSend(delegate { box.ShowImage(px); });
+                        var send = ready(px);
+                        ok = JobSend(delegate { box.ShowImage(send); });
                         if (ok) Wait(0.3);
                     }
                 }
@@ -1946,7 +3328,7 @@ namespace AuraBoxControl
                     ok = true;
                     while (ok && !jobStop && Before(phaseEnd))
                     {
-                        int[] px = WeatherArt.Temperature(w, bx, by, out roomX, out roomY);
+                        int[] px = ready(big ? WeatherArt16.Temperature(w, bx, by, out roomX, out roomY) : WeatherArt.Temperature(w, bx, by, out roomX, out roomY));
                         ok = JobSend(delegate { box.ShowImage(px); });
                         if (ok) Wait(0.25);
                         if (roomX > 0) { if (bx + vx < 0 || bx + vx > roomX) vx = -vx; bx += vx; }
@@ -1955,7 +3337,7 @@ namespace AuraBoxControl
                 }
                 else
                 {
-                    int[] px = showIcon ? icon[0] : temp;
+                    int[] px = ready(showIcon ? icon[0] : temp);
                     ok = JobSend(delegate { box.ShowImage(px); });
                     if (ok) WaitUntil(phaseEnd);
                 }
@@ -1971,31 +3353,26 @@ namespace AuraBoxControl
         {
             var p = NewPage();
             rotateBox = new CheckBox { Text = "Run the playlist", Location = new Point(2, 2), AutoSize = true, Font = Theme.Semibold(10.5f) };
-            rotateBox.CheckedChanged += delegate
-            {
-                if (!manualPause) cfg.Rotate = rotateBox.Checked;   // remembered across restarts (and rebuilds: it lives in the .ini)
-                if (rotateBox.Checked) { StartJob(delegate { PlaylistLoop(null, true); }); status.Text = "Playlist running"; }
-                else { StopJob(); status.Text = "Playlist stopped"; }
-                SaveSettings();
-            };
+            rotateBox.CheckedChanged += delegate { if (!syncingRotate) SetPlaylist(rotateBox.Checked); };
             p.Controls.Add(rotateBox);
             p.Controls.Add(Btn("Skip to Next Item  ›", W - 190, 0, 190, delegate
             {
-                if (!rotateBox.Checked) { status.Text = "Start the playlist first"; return; }
+                if (!playlistOn) { status.Text = "Start the playlist first"; return; }
                 skipItem = true;
                 status.Text = "Skipping to the next item...";
             }));   // a plain button: running the playlist is this page's main action
-            p.Controls.Add(Note("Turned-on items play top to bottom, then start over. Keep the app running (tray is fine).", 2, 32));
+            p.Controls.Add(Note("Turned-on items play top to bottom, then repeat. Sliders set each animation's speed.", 2, 32));
             var onlyOn = new CheckBox { Text = "Show only turned-on items", Location = new Point(W - 190, 36), AutoSize = true, Checked = cfg.OnlyOnItems };
             onlyOn.CheckedChanged += delegate { cfg.OnlyOnItems = onlyOn.Checked; SaveSettings(); LayoutPlayRows(); };
             p.Controls.Add(onlyOn);
 
             var card = NewCard(null, 0, 62, W, H - 62);
+            var rowTips = new ToolTip();
             playRowsPanel = new Panel { Location = new Point(1, 7), Size = new Size(W - 2, H - 62 - 14), AutoScroll = true };
             card.Controls.Add(playRowsPanel);
             playHeaders["on"] = Header("Playing, In Order");
             foreach (string g in PlayItem.Groups) playHeaders[g] = Header("Turn On More: " + g);
-            foreach (var it in cfg.Playlist)
+            foreach (var it in dcfg.Playlist)
             {
                 string id = it.Id;
                 var r = new PlayRow
@@ -2011,6 +3388,21 @@ namespace AuraBoxControl
                 r.Up.Font = r.Down.Font = new Font(Theme.IconFont, 8f);
                 playRowsPanel.Controls.Add(r.On); playRowsPanel.Controls.Add(r.Amount); playRowsPanel.Controls.Add(r.Unit);
                 playRowsPanel.Controls.Add(r.Up); playRowsPanel.Controls.Add(r.Down);
+                if (Array.Exists(LiveAnims, la => la.Id == id))
+                {
+                    // the animation's speed, the same setting as on the Animations page
+                    var row = r;
+                    row.Speed = new TrackBar { Minimum = 1, Maximum = 10, Value = cfg.SpeedOf(id), TickStyle = TickStyle.None, AutoSize = false, Size = new Size(96, 26) };
+                    rowTips.SetToolTip(row.Speed, "Speed (also on the Animations page)");
+                    bool syncing = false;
+                    row.Speed.ValueChanged += delegate { if (syncing) return; cfg.SetSpeed(id, row.Speed.Value); SaveSettings(); speedChanged(id); };
+                    speedChanged += delegate (string changed)
+                    {
+                        if (changed != id || row.Speed.Value == cfg.SpeedOf(id)) return;
+                        syncing = true; row.Speed.Value = cfg.SpeedOf(id); syncing = false;
+                    };
+                    playRowsPanel.Controls.Add(row.Speed);
+                }
                 playRows.Add(r);
             }
             p.Controls.Add(card);
@@ -2064,7 +3456,7 @@ namespace AuraBoxControl
             int y = 6;
             var on = new List<PlayRow>();
             lock (playlistGate)
-                foreach (var it in cfg.Playlist)
+                foreach (var it in dcfg.Playlist)
                     if (it.On) on.Add(RowFor(it.Id));
             Place(playHeaders["on"], 14, y); y += 26;
             for (int k = 0; k < on.Count; k++) { PlaceRow(on[k], y, true, k > 0, k < on.Count - 1); y += 31; }
@@ -2073,7 +3465,7 @@ namespace AuraBoxControl
             {
                 var rows = new List<PlayRow>();
                 lock (playlistGate)
-                    foreach (var it in cfg.Playlist)
+                    foreach (var it in dcfg.Playlist)
                         if (!it.On && it.Group == g) rows.Add(RowFor(it.Id));
                 bool show = !cfg.OnlyOnItems && rows.Count > 0;
                 playHeaders[g].Visible = show;
@@ -2088,9 +3480,11 @@ namespace AuraBoxControl
             r.On.Visible = r.Amount.Visible = r.Unit.Visible = visible;
             r.Up.Visible = r.Down.Visible = visible && r.On.Checked;
             r.Up.Enabled = canUp; r.Down.Enabled = canDown;
+            if (r.Speed != null) r.Speed.Visible = visible;
             if (!visible) return;
             Place(r.On, 14, y + 2); Place(r.Amount, 330, y); Place(r.Unit, 402, y);
             Place(r.Up, 506, y - 1); Place(r.Down, 544, y - 1);   // right after the time, not off at the far edge
+            if (r.Speed != null) Place(r.Speed, 584, y);
         }
 
         PlayRow RowFor(string id) { foreach (var r in playRows) if (r.Id == id) return r; return null; }
@@ -2101,11 +3495,11 @@ namespace AuraBoxControl
             if (on)
                 lock (playlistGate)
                 {
-                    var it = PlayItem.Find(cfg.Playlist, id);
-                    cfg.Playlist.Remove(it);
+                    var it = PlayItem.Find(dcfg.Playlist, id);
+                    dcfg.Playlist.Remove(it);
                     int last = -1;
-                    for (int k = 0; k < cfg.Playlist.Count; k++) if (cfg.Playlist[k].On) last = k;
-                    cfg.Playlist.Insert(last + 1, it);
+                    for (int k = 0; k < dcfg.Playlist.Count; k++) if (dcfg.Playlist[k].On) last = k;
+                    dcfg.Playlist.Insert(last + 1, it);
                 }
             SaveSettings();
             LayoutPlayRows();
@@ -2117,7 +3511,7 @@ namespace AuraBoxControl
         {
             refreshingRows = true;
             lock (playlistGate)
-                foreach (var it in cfg.Playlist)
+                foreach (var it in dcfg.Playlist)
                 {
                     var r = RowFor(it.Id);
                     if (r == null) continue;
@@ -2132,7 +3526,7 @@ namespace AuraBoxControl
         void ReadPlayRows()
         {
             lock (playlistGate)
-                foreach (var it in cfg.Playlist)
+                foreach (var it in dcfg.Playlist)
                 {
                     var r = RowFor(it.Id);
                     if (r == null) continue;
@@ -2147,7 +3541,7 @@ namespace AuraBoxControl
         {
             lock (playlistGate)
             {
-                var list = cfg.Playlist;
+                var list = dcfg.Playlist;
                 int i = list.IndexOf(PlayItem.Find(list, id)), j = i + dir;
                 while (j >= 0 && j < list.Count && !list[j].On) j += dir;
                 if (i < 0 || j < 0 || j >= list.Count) return;
@@ -2165,14 +3559,14 @@ namespace AuraBoxControl
             if (first != null)
             {
                 PlayItem it;
-                lock (playlistGate) it = PlayItem.Find(cfg.Playlist, first);
+                lock (playlistGate) it = PlayItem.Find(dcfg.Playlist, first);
                 RunItem(it, ref lastSync);
                 if (!repeat)
                 {
                     currentItem = null;
                     if (jobStop) return;
                     SetStatus("Back to clock"); showing = "Clock";
-                    if (cfg.SteadyClock) ClockLoop(DateTime.MaxValue);
+                    if (SteadyClock) ClockLoop(DateTime.MaxValue);
                     else JobSend(delegate { box.SetMode(0); });
                     return;
                 }
@@ -2180,7 +3574,7 @@ namespace AuraBoxControl
             while (!jobStop)
             {
                 var items = new List<PlayItem>();
-                lock (playlistGate) foreach (var it in cfg.Playlist) if (it.On) items.Add(new PlayItem { Id = it.Id, Name = it.Name, Seconds = it.Seconds });
+                lock (playlistGate) foreach (var it in dcfg.Playlist) if (it.On) items.Add(new PlayItem { Id = it.Id, Name = it.Name, Seconds = it.Seconds });
                 if (items.Count == 0) { SetStatus("The playlist is empty: turn on at least one item"); Wait(5); continue; }
                 foreach (var it in items) { if (jobStop) break; RunItem(it, ref lastSync); }
             }
@@ -2195,19 +3589,55 @@ namespace AuraBoxControl
             currentItem = it.Id; currentEnd = end;
             jobStatus = "Playlist: " + it.Name + " until " + end.ToString("t");
             if (it.Id != "weather") SetStatus(jobStatus);
-            foreach (var la in LiveAnims) if (la.Id == it.Id) { StreamLoop(la.Make(), LiveInterval(la.Id), end); return; }
+            foreach (var la in LiveAnims) if (la.Id == it.Id) { StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), end); return; }
             switch (it.Id)
             {
                 case "weather": WeatherPeriod(end); return;
-                case "clock": if (cfg.SteadyClock) { ClockLoop(end); return; } break;
+                case "clock": if (SteadyClock) { ClockLoop(end); return; } break;
                 case "text":
-                    int[,] strip = null; int color = 7;
-                    if (!OnUi(delegate { strip = TextArt.Strip(textBox.Text, (string)textFont.SelectedItem); color = textColor.Value; })) return;
-                    MarqueeLoop(strip, color, end);
+                    string text = null, font = null; int color = 7;
+                    if (!OnUi(delegate { text = textBox.Text; font = (string)textFont.SelectedItem; color = textColor.Value; })) return;
+                    MarqueeLoop(text, font, color, end);
                     return;
             }
             Action show = null;
-            if (it.Id == "clock") show = delegate { box.SetMode(0); };
+            if (it.Id == "favorite" || it.Id == "holiday")
+            {
+                GalleryItem pick;
+                string from = "Random Favorite";
+                if (it.Id == "favorite")
+                {
+                    pick = RandomFavorite(box.Size);
+                    if (pick == null) { SetStatus("Random Favorite: no favorites yet (right-click a design in the Gallery)"); Wait(5); return; }
+                }
+                else
+                {
+                    var h = Holidays.Current(DateTime.Today);
+                    if (h == null)   // nothing in season: the item is skipped
+                    {
+                        DateTime when;
+                        var nh = Holidays.Next(DateTime.Today, out when);
+                        SetStatus("Holiday Designs: no holiday in season" + (nh != null ? " (next: " + nh.Name + ", from " + when.ToString("MMMM d") + ")" : ""));
+                        Wait(3);
+                        return;
+                    }
+                    pick = RandomHoliday(h);
+                    if (pick == null) { SetStatus("Holiday Designs: couldn't get " + h.Name + " designs from Divoom"); Wait(5); return; }
+                    from = h.Name;
+                }
+                jobStatus = "Playlist: " + pick.Name + " (" + from + ") until " + end.ToString("t");
+                SetStatus(jobStatus);
+                var tv = box as Tivoo;
+                if (pick.Frames.Count > 1 && tv != null)
+                {
+                    var fr = Sample(pick.Frames, Tivoo.MaxFrames); int ms = pick.Ms > 0 ? pick.Ms : 200;
+                    show = delegate { tv.ShowAnimationMs(fr, ms); };
+                }
+                else if (pick.Frames.Count > 1) { var fr = Sample(pick.Frames); int delay = 5; OnUi(delegate { delay = (int)delayBox.Value; }); show = delegate { box.ShowAnimation(fr, delay); }; }
+                else { var px = pick.Frames[0]; show = delegate { box.ShowImage(px); }; }
+            }
+            else if (it.Id == "clock" && box is Tivoo) { var tv = (Tivoo)box; var w = GetWeather(false); show = delegate { if (w != null) SendWeatherTo(tv, w); tv.ShowClock(); }; }
+            else if (it.Id == "clock") show = delegate { box.SetMode(0); };
             else if (it.Id.StartsWith("mode")) { int m = it.Id[4] - '0'; show = delegate { box.SetMode(m); }; }
             else if (it.Id == "drawing") { int[] px = null; if (!OnUi(delegate { px = (int[])grid.Pixels.Clone(); })) return; show = delegate { box.ShowImage(px); }; }
             else if (it.Id == "animation")
@@ -2219,6 +3649,58 @@ namespace AuraBoxControl
             if (show == null) return;
             if (!JobSend(show)) { SetStatus("Waiting for AuraBox connection..."); Wait(30); return; }
             WaitUntil(end);
+        }
+
+        // a design for the holiday in season, from the first pages of its Gallery list (saved designs come straight
+        // from this PC), with its year brought up to date; never the same one twice in a row
+        string lastHoliday;
+        GalleryItem RandomHoliday(Holiday h)
+        {
+            var src = new GallerySource { Title = h.Name, Kind = "holiday", Query = h.Searches };
+            for (int tries = 0; tries < 4; tries++)
+            {
+                int page;
+                lock (favoriteDice) page = favoriteDice.Next(3);
+                List<DivoomCloud.Entry> list;
+                int total;
+                try { list = CloudList(src, page, out total); } catch (Exception) { continue; }
+                if (list.Count == 0) continue;
+                DivoomCloud.Entry e;
+                lock (favoriteDice) e = list[favoriteDice.Next(list.Count)];
+                if (e.Id == lastHoliday && list.Count > 1) continue;
+                List<int[]> fr;
+                try { fr = CloudFrames(e.Id); } catch (Exception) { continue; }
+                string name = GalleryNames.NoYears(GalleryNames.Clean(e.Name));
+                var item = new GalleryItem { Category = h.Name, Name = name.Length > 0 ? name : h.Name };
+                if (e.Id.StartsWith(DivoomCloud16.Prefix)) item.Ms = DivoomCloud16.MsOf(e.Id.Substring(DivoomCloud16.Prefix.Length));
+                foreach (var f in Distinct(fr)) item.Frames.Add(f);
+                Renamed(item);
+                UpdateYear(item, e.Name + " " + h.Name);
+                lastHoliday = e.Id;
+                return item;
+            }
+            return null;
+        }
+
+        // a favorite for the playlist: one made for this display's size (any favorite when there are none), never the
+        // same one twice in a row on a display
+        static readonly Random favoriteDice = new Random();
+        readonly Dictionary<int, string> lastFavorite = new Dictionary<int, string>();
+        GalleryItem RandomFavorite(int size)
+        {
+            List<GalleryItem> all;
+            try { all = GalleryItem.LoadFavorites(); } catch (Exception) { return null; }
+            var fits = all.FindAll(f => f.Frames.Count > 0 && Proto.Side(f.Frames[0]) == size);
+            if (fits.Count == 0) fits = all;
+            if (fits.Count == 0) return null;
+            string last;
+            lock (lastFavorite) lastFavorite.TryGetValue(size, out last);
+            GalleryItem pick;
+            lock (favoriteDice) pick = fits[favoriteDice.Next(fits.Count)];
+            if (fits.Count > 1 && pick.Name + Signature(pick.Frames) == last)
+                lock (favoriteDice) pick = fits[(fits.IndexOf(pick) + 1 + favoriteDice.Next(fits.Count - 1)) % fits.Count];
+            lock (lastFavorite) lastFavorite[size] = pick.Name + Signature(pick.Frames);
+            return pick;
         }
 
         // ---------- alarm & sleep ----------
@@ -2254,10 +3736,10 @@ namespace AuraBoxControl
             {
                 int mins = (int)sleepMin.Value, sc = sleepScene.SelectedIndex; bool on = sleepOn.Checked;
                 cfg.SleepMinutes = mins; cfg.SleepScene = sc; cfg.SleepOn = on; SaveSettings();
-                Run(delegate { box.SetSleep(mins, sc, on); }, on ? "Sleep timer: " + mins + " minutes" : "Sleep timer off");
+                Run(delegate { box.SetSleep(mins, sc, on); }, on ? "Sleep timer: " + mins + (mins == 1 ? " minute" : " minutes") : "Sleep timer off");
             }, true));
             p.Controls.Add(sg);
-            p.Controls.Add(Note("Alarm and sleep run on the AuraBox itself; the app does not need to stay open for these.", 2, 284));
+            p.Controls.Add(Note("Alarm and sleep go to the display picked at the top and run on it; the app does not need to stay open.", 2, 284));
             return p;
         }
 
@@ -2292,7 +3774,7 @@ namespace AuraBoxControl
             p.Controls.Add(general);
 
             var win = NewCard("Window and Startup", 0, 114, W, 182);
-            var trayBox = new CheckBox { Text = "Minimize and close (X) go to the system tray. Quit with Exit in the tray menu.", Location = new Point(14, 38),
+            var trayBox = new CheckBox { Text = "Close (X) goes to the system tray, keeping the playlist running. Quit with Exit in the tray menu.", Location = new Point(14, 38),
                                          AutoSize = true, Checked = cfg.MinimizeToTray };
             trayBox.CheckedChanged += delegate { cfg.MinimizeToTray = trayBox.Checked; SaveSettings(); };
             win.Controls.Add(trayBox);
@@ -2303,7 +3785,7 @@ namespace AuraBoxControl
             win.Controls.Add(notifyBox);
             string run = ReadRunValue();
             int startChoice = run.Length == 0 ? 0 : run.Contains("--tray") ? 2 : 1;
-            string[] starts = { "Don't start AuraBox Control", "Open AuraBox Control",
+            string[] starts = { "Don't start VaVaVoom Control", "Open VaVaVoom Control",
                                 "Start in the system tray (connects and runs the playlist without showing this window)" };
             for (int k = 0; k < 3; k++)
             {
@@ -2322,17 +3804,44 @@ namespace AuraBoxControl
                 };
                 win.Controls.Add(rb);
             }
-            win.Controls.Add(Note("When AuraBox Control isn't running or connected, the AuraBox goes back to its built-in clock.", 14, 158));
+            win.Controls.Add(Note("When VaVaVoom Control isn't running or connected, the AuraBox goes back to its built-in clock.", 14, 158));
             p.Controls.Add(win);
 
-            var backup = NewCard("Backup and Restore", 0, 306, W, 72);
+            var backup = NewCard("Backup and Saved Designs", 0, 306, W, 108);
             backup.Controls.Add(Btn("Export Settings...", 12, 34, 162, delegate { ExportSettings(); }));
             backup.Controls.Add(Btn("Import Settings...", 182, 34, 162, delegate { ImportSettings(); }));
             backup.Controls.Add(Note("Settings and favorites are in the settings folder next\r\nto the program. Export puts them, with the playlist, in one file.", 360, 32));
+            // every design the Gallery downloads is kept on this PC (settings\cache); how many, where, and clearing them
+            var saved = new Label { Text = "Saved designs: counting…", Location = new Point(14, 76), AutoSize = true, UseMnemonic = false };
+            backup.Controls.Add(saved);
+            Action countSaved = delegate
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    int files; long bytes;
+                    DesignCache.Usage(out files, out bytes);
+                    string text = "Saved designs: " + files.ToString("N0") + " (" + (bytes / 1048576.0).ToString("0.0") + " MB)";
+                    try { BeginInvoke((Action)delegate { saved.Text = text; }); } catch (InvalidOperationException) { }
+                });
+            };
+            p.VisibleChanged += delegate { if (p.Visible) countSaved(); };
+            backup.Controls.Add(Btn("Open Folder", 360, 68, 130, delegate
+            {
+                try { Directory.CreateDirectory(DesignCache.Dir); System.Diagnostics.Process.Start("explorer.exe", "\"" + DesignCache.Dir + "\""); }
+                catch (Exception e) { status.Text = "Could not open the folder: " + e.Message; }
+            }));
+            backup.Controls.Add(Btn("Clear Saved Designs…", 498, 68, 188, delegate
+            {
+                if (MessageBox.Show(this, "Delete the Gallery designs saved on this PC?\r\n\r\nThey download again when you browse. Favorites, your lists and names you gave designs are kept.",
+                                    "Clear Saved Designs", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+                try { DesignCache.Clear(); status.Text = "Saved designs cleared"; }
+                catch (Exception e) { status.Text = "Could not clear everything: " + e.Message; }
+                countSaved();
+            }));
             p.Controls.Add(backup);
 
-            var about = NewCard("About", 0, 388, W, 124);
-            about.Controls.Add(new Label { Text = "AuraBox Control " + VersionText(AppVersion) + " — a portable app for the Divoom AuraBox over Bluetooth.",
+            var about = NewCard("About", 0, 424, W, 92);
+            about.Controls.Add(new Label { Text = "VaVaVoom Control " + VersionText(AppVersion) + " — a portable app for Divoom pixel displays over Bluetooth.",
                                            Location = new Point(14, 34), AutoSize = true, UseMnemonic = false });
             // Check for Updates turns into "Download x.y.z" when GitHub has a newer release (hidden until UpdateRepo is set)
             updateBtn = Btn("Check for Updates", W - 172, 26, 158, delegate
@@ -2342,8 +3851,7 @@ namespace AuraBoxControl
             });
             updateBtn.Visible = UpdateRepo.Length > 0;
             about.Controls.Add(updateBtn);
-            about.Controls.Add(Note("This is an independent app. It is not affiliated with, endorsed by or supported by\r\nDivoom, the maker of the AuraBox.", 14, 56));
-            about.Controls.Add(Note("Some features, like live weather and the Divoom cloud gallery, need an internet connection.", 14, 94));
+            about.Controls.Add(Note("An independent app, not affiliated with, endorsed by or supported by Divoom, the maker of the AuraBox.\r\nLive weather and the Divoom gallery need an internet connection.", 14, 54));
             p.Controls.Add(about);
             return p;
         }
@@ -2367,7 +3875,7 @@ namespace AuraBoxControl
                     System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072;   // TLS 1.2
                     using (var wc = new System.Net.WebClient())
                     {
-                        wc.Headers[System.Net.HttpRequestHeader.UserAgent] = "AuraBoxControl/" + VersionText(AppVersion);
+                        wc.Headers[System.Net.HttpRequestHeader.UserAgent] = "VaVaVoomControl/" + VersionText(AppVersion);
                         string json = wc.DownloadString("https://api.github.com/repos/" + UpdateRepo + "/releases/latest");
                         var t = System.Text.RegularExpressions.Regex.Match(json, "\"tag_name\"\\s*:\\s*\"v?([0-9]+(?:\\.[0-9]+){0,3})");
                         var u = System.Text.RegularExpressions.Regex.Match(json, "\"html_url\"\\s*:\\s*\"([^\"]+)\"");   // the first one is the release page
@@ -2384,7 +3892,7 @@ namespace AuraBoxControl
                         {
                             updateUrl = page;
                             updateBtn.Text = "Download " + VersionText(latest); updateBtn.Tag = "primary"; Theme.Apply(updateBtn);
-                            status.Text = "AuraBox Control " + VersionText(latest) + " is available: see Settings, About";
+                            status.Text = "VaVaVoom Control " + VersionText(latest) + " is available: see Settings, About";
                         }
                         else if (asked)
                             status.Text = error != null ? "Couldn't check for updates: " + error
@@ -2428,7 +3936,7 @@ namespace AuraBoxControl
 
         void ExportSettings()
         {
-            using (var dlg = new SaveFileDialog { Filter = "AuraBox Control backup (*.txt)|*.txt", FileName = "AuraBox Control Backup " + DateTime.Now.ToString("yyyy-MM-dd") + ".txt" })
+            using (var dlg = new SaveFileDialog { Filter = "VaVaVoom Control backup (*.txt)|*.txt", FileName = "VaVaVoom Control Backup " + DateTime.Now.ToString("yyyy-MM-dd") + ".txt" })
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
@@ -2447,7 +3955,7 @@ namespace AuraBoxControl
 
         void ImportSettings()
         {
-            using (var dlg = new OpenFileDialog { Filter = "AuraBox Control backup (*.txt)|*.txt|All files (*.*)|*.*" })
+            using (var dlg = new OpenFileDialog { Filter = "VaVaVoom Control backup (*.txt)|*.txt|All files (*.*)|*.*" })
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
@@ -2459,11 +3967,11 @@ namespace AuraBoxControl
                     if (mark >= 0) { favLines = settingLines.GetRange(mark + 1, lines.Length - mark - 1); settingLines.RemoveRange(mark, lines.Length - mark); }
                     if (!settingLines.Exists(l => l.StartsWith("playlist=") || l.StartsWith("mac=")))
                     {
-                        MessageBox.Show(this, "That file isn't an AuraBox Control backup.", "Import Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show(this, "That file isn't a VaVaVoom Control backup.", "Import Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         return;
                     }
                     if (MessageBox.Show(this, "Replace the current settings" + (mark < 0 ? "" : " and favorites") + " with this backup?\r\n\r\n" +
-                                        "AuraBox Control will restart to load them.", "Import Settings",
+                                        "VaVaVoom Control will restart to load them.", "Import Settings",
                                         MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
                     Settings restored = Settings.FromLines(settingLines);
                     StopJob();
@@ -2481,7 +3989,7 @@ namespace AuraBoxControl
         static void Main(string[] args)
         {
             bool first;
-            using (var mutex = new Mutex(true, "AuraBoxControl.SingleInstance", out first))
+            using (var mutex = new Mutex(true, "VaVaVoomControl.SingleInstance", out first))
             {
                 if (!first && Array.IndexOf(args, "--restart") >= 0)   // restarted after an import: wait for the old copy to close
                 {

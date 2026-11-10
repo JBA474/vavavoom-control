@@ -4,10 +4,11 @@
 
 # personal data: settings (device address, location), saved favorites, backups
 settings/
-AuraBoxControl.ini
-AuraBoxControl.ini.bak
+*.ini
+*.ini.bak
 favorites.txt
 AuraBox Control Backup*.txt
+VaVaVoom Control Backup*.txt
 
 # Divoom's artwork and app (see README: make gallery.txt yourself)
 gallery.txt

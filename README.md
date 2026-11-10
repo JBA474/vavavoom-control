@@ -1,31 +1,39 @@
-# AuraBox Control
+# VaVaVoom Control
 
-A portable Windows app for the **Divoom AuraBox**, the Bluetooth speaker with a 10×10 LED display. It runs the
-display from your PC: clocks, weather, live animations, your own drawings and scrolling text, all in a playlist
-that keeps going from the system tray.
+A portable Windows app for Divoom's Bluetooth pixel displays: the **AuraBox** (10×10, 8 colors) and the
+**Tivoo** (16×16, full color). It runs the displays from your PC: clocks, weather, live animations, your own
+drawings and scrolling text, all in a playlist per display that keeps going from the system tray.
 
 > This is an independent project. It is not affiliated with, endorsed by or supported by Divoom, the maker of
-> the AuraBox. "Divoom" and "AuraBox" are trademarks of their owner.
+> the AuraBox and the Tivoo. "Divoom", "AuraBox" and "Tivoo" are trademarks of their owner.
 
 ![Now page](docs/now.png)
 
 ## Features
 
+- **Two displays at once.** Each connected display has its own playlist; pick one at the top to control it.
 - **Playlist.** Rotate any mix of items, each for its own length of time, and run it from the system tray.
+  Random Favorite and Holiday Designs (whatever holiday is in season) pick something new each time.
 - **Clock.** A steady clock drawn by the app (no blinking colon), or the box's own clock. 12- or 24-hour.
 - **Weather.** Current conditions from [Open-Meteo](https://open-meteo.com) (free, no API key). Animated
   icons, with an optional bounce around the screen.
-- **Live animations.** These are drawn on the PC frame by frame, so there's no 8-frame limit. Each has its own
-  speed setting:
+- **Live animations.** These are drawn on the PC frame by frame, so there's no frame limit, at 10×10 or
+  16×16 to suit the display. Each has its own speed setting:
   - Lava Clock: lava gathers into the time, then melts into a puddle.
   - Fireplace, Lava Lamp, Hyperspace, Rain on a Window.
   - Snake Chase, Tetrix, Bouncing Balls, Brick Breaker.
   - A waving Laos flag.
 - **Create.** A drawing editor, an 8-frame animation editor, an animated GIF importer, and scrolling text in
   any Windows font.
-- **Gallery.** Browse the community designs on Divoom's cloud gallery and save favorites.
-- **Box controls.**
-  - The built-in modes, solid colors and brightness.
+- **Gallery.** Browse Divoom's cloud galleries (16×16 art by topic and by holiday, search, your Divoom likes
+  and uploads, older small art, LaMetric icons):
+  - Names in English, duplicates hidden, and any design can be renamed.
+  - Years drawn in designs are brought up to date ("Happy New Year 2021" shows the coming year).
+  - Favorites (10×10 and 16×16) and lists of your own, kept on this PC.
+  - Every design you've seen is saved on the PC, so pages open at once and still work offline.
+- **Display controls.**
+  - The built-in modes, solid colors and brightness. On the Tivoo: its clocks, light, effects, scoreboard,
+    games and a color boost for its LEDs.
   - Audio input: the AUX jack or Bluetooth.
   - Alarm and sleep timer, notification icons, and the temperature unit.
 - **Everyday use.**
@@ -44,8 +52,8 @@ that keeps going from the system tray.
 
 - Windows 10 or 11.
 - The .NET Framework 4.x that comes with Windows. Nothing to install.
-- An AuraBox paired in Windows Bluetooth settings. It shows up as **AuraBox-audio**; use PIN `0000` if asked.
-  The app talks to the box's display over the Bluetooth serial port (SPP).
+- An AuraBox or Tivoo paired in Windows Bluetooth settings. They show up as **AuraBox-audio** and
+  **Tivoo-audio**; use PIN `0000` if asked. The app talks to the display over the Bluetooth serial port (SPP).
 
 ## Build
 
@@ -55,15 +63,16 @@ No SDK or Visual Studio is needed. The C# compiler is part of Windows:
 tools\build.cmd
 ```
 
-This produces `AuraBoxControl.exe` in this folder. It's portable: settings (`AuraBoxControl.ini`) and favorites
-(`favorites.txt`) are saved in a `settings` folder next to it, created on first run.
+This produces `VaVaVoomControl.exe` in this folder. It's portable: settings (`VaVaVoomControl.ini`), favorites
+(`favorites.txt`), your lists (`lists.txt`) and saved Gallery designs (`cache\`) are kept in a `settings` folder
+next to it, created on first run.
 
 | Folder | What's in it |
 |---|---|
 | `src/` | The C# source, the app icon, and the design lists built into the exe |
 | `tools/` | `build.cmd`, and the scripts that make the icon and the design lists |
 | `docs/` | Screenshots for this README |
-| `settings/` | Your settings and favorites (made by the app, not committed) |
+| `settings/` | Your settings, favorites, lists and saved designs (made by the app, not committed) |
 | `dist/` | Release downloads (not committed) |
 
 ### Optional: Divoom's built-in designs
@@ -109,7 +118,11 @@ The protocol was worked out from the official Android app.
   | `4C` | Temperature unit |
   | `50` | Notification |
 
-The cloud gallery uses Divoom's public gallery server, which may change or go away at any time.
+The Tivoo uses Divoom's newer framing: `01 | len_lo len_hi cmd data… sum_lo sum_hi | 02` with no escaping, and
+full-color pictures (`44`) and animations (`49`) as a color table plus packed color numbers.
+
+The cloud galleries use Divoom's public servers, and English names use an unofficial Google translation address;
+either may change or go away at any time.
 
 ## License
 

@@ -71,7 +71,7 @@ namespace AuraBoxControl
                           (Image.IsAlphaPixelFormat(image.PixelFormat) ? " with transparency (shown as black)" : ""));
             int frames = FrameCount(image);
             if (frames > 1)
-                sb.AppendLine("Animated: " + frames + " frames" + (frames > 8 ? " (the AuraBox holds 8: sending samples 8 evenly, or play every frame from the PC)" : ""));
+                sb.AppendLine("Animated: " + frames + " frames" + (frames > AuraBox.MaxFrames ? " (the AuraBox holds " + AuraBox.MaxFrames + ": sending samples " + AuraBox.MaxFrames + " evenly, or play every frame from the PC)" : ""));
             if (image.Width != 10 || image.Height != 10)
                 sb.AppendLine("ℹ Will be scaled to 10 × 10.");
             sb.AppendLine("ℹ Colors are reduced to the AuraBox's 8 colors.");
@@ -285,12 +285,13 @@ namespace AuraBoxControl
             }
         }
 
-        // the AuraBox holds 8 frames: longer animations are sampled evenly
+        // the AuraBox holds 12 frames: longer animations are sampled evenly
         List<int[]> Sample8()
         {
-            if (converted.Count <= 8) return new List<int[]>(converted);
+            int max = AuraBox.MaxFrames;
+            if (converted.Count <= max) return new List<int[]>(converted);
             var list = new List<int[]>();
-            for (int k = 0; k < 8; k++) list.Add(converted[k * converted.Count / 8]);
+            for (int k = 0; k < max; k++) list.Add(converted[k * converted.Count / max]);
             return list;
         }
 
