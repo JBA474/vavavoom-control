@@ -390,7 +390,7 @@ namespace AuraBoxControl
         static readonly string[,] All = {
             { "clock", "Clock" }, { "weather", "Weather" }, { "mode1", "Temperature (Built-In Sensor)" }, { "mode2", "Color Light" },
             { "mode3", "Sound Light" }, { "mode4", "Forest" }, { "mode5", "Marquee" }, { "mode6", "Color Pieces" },
-            { "snakes", "Snake Chase" }, { "blocks", "Tetrix" }, { "stars", "Hyperspace" }, { "rain", "Rain on a Window" }, { "fire", "Fireplace" }, { "fireworks", "Fireworks" }, { "heart", "Heart Monitor" }, { "balls", "Bouncing Balls" }, { "bricks", "Brick Breaker" }, { "laos", "Laos Flag" },{ "lava", "Lava Lamp" }, { "lavaclock", "Lava Clock" }, { "countdown", "Countdown Timer" }, { "text", "Scrolling Text" }, { "drawing", "Current Drawing" }, { "animation", "Current Animation" }, { "favorite", "Random Favorite" }, { "holiday", "Holiday Designs (in season)" } };
+            { "snakes", "Snake Chase" }, { "blocks", "Tetrix" }, { "stars", "Hyperspace" }, { "rain", "Rain on a Window" }, { "fire", "Fireplace" }, { "fireworks", "Fireworks" }, { "heart", "Heart Monitor" }, { "balls", "Bouncing Balls" }, { "bricks", "Brick Breaker" }, { "laos", "Laos Flag" },{ "lava", "Lava Lamp" }, { "mandelbrot", "Mandelbrot Zoom" }, { "miner", "Gem Miner" }, { "lavaclock", "Lava Clock" }, { "countdown", "Countdown Timer" }, { "text", "Scrolling Text" }, { "drawing", "Current Drawing" }, { "animation", "Current Animation" }, { "favorite", "Random Favorite" }, { "holiday", "Holiday Designs (in season)" } };
 
         // sections on the Playlist page for items that are turned off
         public static readonly string[] Groups = { "Clock & Weather", "Animations", "Original Modes", "Your Content" };
@@ -1637,6 +1637,437 @@ namespace AuraBoxControl
             var px = new int[N * N];
             for (int y = 0; y < N; y++)
                 for (int x = 0; x < N; x++) px[y * N + x] = Shade(Field(x, y));
+            return px;
+        }
+    }
+
+    // Mandelbrot Zoom: starts on the whole Mandelbrot set, dives into the edge toward one of its famous spots (spirals,
+    // seahorses, tiny copies of the set) with the colors slowly cycling, then pulls back out and heads for another.
+    // A dive stops early when the picture runs out of detail (inside a tiny copy, say). Next() gives RGB colors at
+    // 16 x 16 (each pixel averaged from 3 x 3 samples) and palette indexes at 10 x 10.
+    class Mandelbrot
+    {
+        static readonly double[,] Spots = {
+            { -0.743643887037151, 0.131825904205330 },    // seahorse valley
+            { -0.77568377, 0.13646737 },                   // double spiral
+            { -0.10109636384562, 0.95628651080914 },       // branch tip
+            { 0.001643721971153, -0.822467633298876 },     // lacy branches
+            { -1.25066, 0.02012 },                         // the neck between the big bulbs
+            { -0.761574, -0.0847596 },                     // spiral arms
+            { -1.768778833, -0.001738996 },                // out along the spike
+            { 0.360240443437614, -0.641313061064803 },     // curls on the lower edge
+            { -0.16070135, 1.0375665 },                    // spirals near the top
+            { 0.2925755, -0.0149977 },                     // elephant valley
+            { -0.0452407411, 0.9868162204352258 },         // top spirals
+        };
+        // full-strength colors around a loop: blue, cyan, yellow, orange, magenta (and back to blue)
+        static readonly int[] Gradient = { 0x0020FF, 0x00D8FF, 0xFFE000, 0xFF4800, 0xE000B0 };
+        static readonly int[] Bands10 = { 4, 6, 7, 3, 1, 5 };   // 10 x 10: blue, cyan, white, yellow, red, magenta
+
+        const double HomeX = -0.6, HomeY = 0, Wide = 3.2, Deep = 2e-7;
+        const int Linger = 25;   // frames held at the deepest point and on the whole set
+
+        readonly int N, S;   // screen size; samples across each pixel
+        readonly Random rng = new Random();
+        int spot = -1, stage, wait;   // stage 0: whole set, 1: diving, 2: holding deep, 3: pulling out
+        double width = Wide, phase;
+
+        public Mandelbrot() : this(10) { }
+        public Mandelbrot(int size) { N = size; S = size == 16 ? 3 : 1; wait = Linger; }
+
+        public int[] Next()
+        {
+            // where the picture goes next
+            if (stage == 0 && --wait <= 0) { spot = NewSpot(); stage = 1; }
+            else if (stage == 1) width *= 0.965;
+            else if (stage == 2 && --wait <= 0) stage = 3;
+            else if (stage == 3 && (width /= 0.93) >= Wide) { width = Wide; stage = 0; wait = Linger; }
+            if (stage == 1 && width <= Deep) { stage = 2; wait = Linger; }
+            phase += 0.006;
+
+            // the view closes in on the spot: the center slides from the whole set's middle to the spot as it zooms
+            double tx = spot < 0 ? HomeX : Spots[spot, 0], ty = spot < 0 ? HomeY : Spots[spot, 1];
+            double pull = (width / Wide) * (width / Wide);
+            double cx = tx + (HomeX - tx) * pull, cy = ty + (HomeY - ty) * pull;
+            int limit = (int)Math.Min(1500, 80 + 60 * Math.Log10(Wide / width));
+
+            var mu = new double[N * N * S * S];
+            int inside = 0;
+            double lo = double.MaxValue, hi = 0;
+            double step = width / (N * S);
+            for (int j = 0; j < N * S; j++)
+                for (int i = 0; i < N * S; i++)
+                {
+                    double v = Escape(cx + (i - N * S / 2.0 + 0.5) * step, cy + (j - N * S / 2.0 + 0.5) * step, limit);
+                    mu[j * N * S + i] = v;
+                    if (v < 0) inside++;
+                    else { lo = Math.Min(lo, v); hi = Math.Max(hi, v); }
+                }
+
+            // out of detail (mostly inside a tiny copy of the set, or a plain smooth blend): stop diving and hold here
+            if (stage == 1 && width < 2e-3 && (inside > mu.Length * 0.55 || hi - lo < 8)) { stage = 2; wait = Linger; }
+
+            var px = new int[N * N];
+            for (int y = 0; y < N; y++)
+                for (int x = 0; x < N; x++)
+                {
+                    if (S == 1) { px[y * N + x] = Band(mu[y * N + x], lo); continue; }
+                    int r = 0, g = 0, b = 0;
+                    for (int dy = 0; dy < S; dy++)
+                        for (int dx = 0; dx < S; dx++)
+                        {
+                            int c = Color(mu[(y * S + dy) * N * S + x * S + dx], lo);
+                            r += c >> 16 & 0xFF; g += c >> 8 & 0xFF; b += c & 0xFF;
+                        }
+                    int n = S * S;
+                    px[y * N + x] = (r / n) << 16 | (g / n) << 8 | (b / n);
+                }
+            return px;
+        }
+
+        int NewSpot()
+        {
+            int k;
+            do k = rng.Next(Spots.GetLength(0)); while (k == spot && Spots.GetLength(0) > 1);
+            return k;
+        }
+
+        // smooth escape count for c = (x, y); -1 inside the set
+        static double Escape(double x, double y, int limit)
+        {
+            // the two biggest bulbs are inside: skip the full count there
+            double q = (x - 0.25) * (x - 0.25) + y * y;
+            if (q * (q + (x - 0.25)) <= 0.25 * y * y || (x + 1) * (x + 1) + y * y <= 0.0625) return -1;
+            double zx = 0, zy = 0;
+            for (int n = 0; n < limit; n++)
+            {
+                double xx = zx * zx, yy = zy * zy;
+                if (xx + yy > 256) return n + 1 - Math.Log(Math.Log(xx + yy) / 2 / Math.Log(2)) / Math.Log(2);
+                zy = 2 * zx * zy + y; zx = xx - yy + x;
+            }
+            return -1;
+        }
+
+        // where an escape count sits on the color cycle, measured from the frame's lowest count so deep views stay colorful
+        double Spot(double v, double lo) { return Math.Log(1 + v - lo) * 0.45 + phase; }
+
+        int Color(double v, double lo)
+        {
+            if (v < 0) return 0;
+            double t = Spot(v, lo) * Gradient.Length;
+            t -= Math.Floor(t / Gradient.Length) * Gradient.Length;
+            int a = (int)t, b = (a + 1) % Gradient.Length;
+            double f = t - a;
+            int ca = Gradient[a], cb = Gradient[b], o = 0;
+            for (int sh = 0; sh <= 16; sh += 8)
+                o |= (int)Math.Round((ca >> sh & 0xFF) * (1 - f) + (cb >> sh & 0xFF) * f) << sh;
+            return o;
+        }
+
+        int Band(double v, double lo)
+        {
+            if (v < 0) return 0;
+            double t = Spot(v, lo) * 1.3;   // 10 x 10 has no in-between colors: one band per step
+            return Bands10[(int)(t - Math.Floor(t / Bands10.Length) * Bands10.Length) % Bands10.Length];
+        }
+    }
+
+    // Gem Miner: a digging game that plays itself. A miner in a yellow hard hat tunnels down through layers of earth
+    // after buried gems while glow worms crawl through the tunnels after him. His lamp zaps a worm down a straight
+    // tunnel, and a boulder left hanging over a tunnel wobbles, falls and squashes whatever is below. Once every gem
+    // is dug out the tunnels sparkle and a new level starts with more worms. A worm that catches him starts the level over.
+    // Next() gives palette indexes: 0..7 at 10 x 10, Palette16 at 16 x 16.
+    class GemMiner
+    {
+        const int Tunnel = 0, Soil = 1, Gem = 2;
+        class Worm { public int X, Y, Dx, Dy, Dead; }
+        class Rock { public int X, Y, Wobble, Fell; public bool Falling; }
+
+        readonly int N, Sky;   // screen size; rows of sky on top (16 x 16 only)
+        readonly Random rng = new Random();
+        readonly int[] layers, sky;
+        readonly int minerColor, wormColor, rockColor, gemColor, beamColor;
+        int[,] ground;
+        readonly List<Worm> worms = new List<Worm>();
+        readonly List<Rock> rocks = new List<Rock>();
+        int mx, my, tick, level, levelTicks, hurt, cheer, glint, charge;   // charge: frames until the lamp can zap again
+        int zapX, zapY, zapDx, zapDy, zapLen, zap;   // the lamp beam being drawn
+
+        public GemMiner() : this(10) { }
+        public GemMiner(int size)
+        {
+            N = size;
+            if (N == 16)
+            {
+                Sky = 2; sky = new[] { Palette16.Navy, Palette16.SkyBlue };
+                layers = new[] { Palette16.Brown, Palette16.DarkOrange, Palette16.DarkRed, Palette16.Purple };
+                minerColor = 3; wormColor = Palette16.Lime; rockColor = 7; gemColor = 6; beamColor = 3;
+            }
+            else
+            {
+                Sky = 0; sky = new int[0];
+                layers = new[] { 3, 1, 4 };
+                minerColor = 7; wormColor = 2; rockColor = 5; gemColor = 6; beamColor = 7;
+            }
+            NewLevel();
+        }
+
+        bool In(int x, int y) { return x >= 0 && x < N && y >= Sky && y < N; }
+        Rock RockAt(int x, int y) { foreach (var r in rocks) if (r.X == x && r.Y == y) return r; return null; }
+        Worm WormAt(int x, int y) { foreach (var w in worms) if (w.Dead == 0 && w.X == x && w.Y == y) return w; return null; }
+        bool Open(int x, int y) { return In(x, y) && ground[x, y] == Tunnel && RockAt(x, y) == null; }
+
+        void NewLevel()
+        {
+            ground = new int[N, N];
+            for (int y = Sky; y < N; y++) for (int x = 0; x < N; x++) ground[x, y] = Soil;
+            worms.Clear(); rocks.Clear();
+            mx = N / 2; my = Sky; ground[mx, my] = Tunnel;
+            levelTicks = 0; hurt = 0; zap = 0;
+            int depth = N - Sky;
+            // gems in the lower part, apart from each other
+            for (int k = 0, tries = 0; k < (N == 16 ? 7 : 3) && tries < 500; tries++)
+            {
+                int x = rng.Next(N), y = Sky + depth / 3 + rng.Next(depth - depth / 3);
+                if (ground[x, y] != Soil || Near(x, y, Gem, 2)) continue;
+                ground[x, y] = Gem; k++;
+            }
+            // boulders in the middle rows, not over the miner's start
+            for (int k = 0, tries = 0; k < (N == 16 ? 6 : 3) && tries < 500; tries++)
+            {
+                int x = rng.Next(N), y = Sky + 2 + rng.Next(depth - 4);
+                if (ground[x, y] != Soil || Math.Abs(x - mx) < 2 || RockAt(x, y) != null || RockAt(x, y - 1) != null || RockAt(x, y + 1) != null) continue;
+                ground[x, y] = Tunnel; rocks.Add(new Rock { X = x, Y = y }); k++;
+            }
+            // caves, each with a worm
+            int caves = Math.Min(1 + level, N == 16 ? 5 : 3);
+            for (int k = 0, tries = 0; k < caves && tries < 500; tries++)
+            {
+                int y = Sky + 3 + rng.Next(depth - 3), x = rng.Next(N - 3), len = 3 + rng.Next(N == 16 ? 3 : 2);
+                bool ok = true;
+                for (int i = x; i < x + len && i < N; i++) if (ground[i, y] != Soil || RockAt(i, y) != null || RockAt(i, y - 1) != null) ok = false;
+                if (!ok || Math.Abs(y - my) < 3) continue;
+                for (int i = x; i < x + len && i < N; i++) ground[i, y] = Tunnel;
+                worms.Add(new Worm { X = x + rng.Next(Math.Min(len, N - x)), Y = y, Dx = 1 });
+                k++;
+            }
+        }
+
+        bool Near(int x, int y, int kind, int d)
+        {
+            for (int j = y - d; j <= y + d; j++) for (int i = x - d; i <= x + d; i++) if (In(i, j) && ground[i, j] == kind) return true;
+            return false;
+        }
+
+        static readonly int[] DX = { 1, -1, 0, 0 }, DY = { 0, 0, 1, -1 };
+
+        public int[] Next()
+        {
+            tick++; levelTicks++;
+            if (zap > 0) zap--;
+            if (glint > 0) glint--;
+            if (charge > 0) charge--;
+            if (cheer > 0) { if (--cheer == 0) { level++; NewLevel(); } return Draw(); }
+            if (hurt > 0) { if (--hurt == 0) NewLevel(); return Draw(); }
+            if (levelTicks > 1500) { NewLevel(); return Draw(); }   // a level that drags on starts fresh
+
+            foreach (var w in worms) if (w.Dead > 0) w.Dead--;
+            worms.RemoveAll(w => w.Dead == 1);
+            MoveRocks();
+            if (tick % 2 == 0) MoveMiner();
+            int wormEvery = Math.Max(2, 4 - level / 2);
+            if (tick % wormEvery == 0) foreach (var w in worms) if (w.Dead == 0) MoveWorm(w);
+            if (hurt == 0 && WormAt(mx, my) != null) hurt = 14;
+            return Draw();
+        }
+
+        void MoveRocks()
+        {
+            foreach (var r in rocks.ToArray())
+            {
+                if (!r.Falling)   // dug out from below: it wobbles, then drops
+                {
+                    if (Open(r.X, r.Y + 1)) { if (++r.Wobble >= 8) r.Falling = true; }
+                    else r.Wobble = 0;
+                    continue;
+                }
+                if (In(r.X, r.Y + 1) && ground[r.X, r.Y + 1] == Tunnel && RockAt(r.X, r.Y + 1) == null)
+                {
+                    r.Y++; r.Fell++;
+                    var w = WormAt(r.X, r.Y); if (w != null) w.Dead = 7;
+                    if (r.X == mx && r.Y == my && hurt == 0) hurt = 14;
+                }
+                else rocks.Remove(r);   // landed: it crumbles away
+            }
+        }
+
+        // a boulder that's loose (or soon will be) above (x, y) with nothing solid between
+        bool Overhead(int x, int y)
+        {
+            for (int j = y - 1; j >= Sky; j--)
+            {
+                var r = RockAt(x, j);
+                if (r != null) return r.Falling || r.Wobble > 0 || j == y - 1;
+                if (ground[x, j] != Tunnel) return false;
+            }
+            return false;
+        }
+
+        void MoveMiner()
+        {
+            // a worm straight down a tunnel within reach: zap it (the lamp needs a while to recharge)
+            for (int d = 0; d < 4 && charge == 0; d++)
+                for (int s = 1; s <= 5; s++)
+                {
+                    int x = mx + DX[d] * s, y = my + DY[d] * s;
+                    if (!Open(x, y)) break;
+                    var w = WormAt(x, y);
+                    if (w == null) continue;
+                    w.Dead = 7; zap = 3; charge = 14; zapX = mx; zapY = my; zapDx = DX[d]; zapDy = DY[d]; zapLen = s;
+                    return;
+                }
+
+            // a loose boulder overhead: step out from under it first
+            if (Overhead(mx, my))
+            {
+                for (int d = 0; d < 4; d++)
+                {
+                    int x = mx + DX[d], y = my + DY[d];
+                    if (!In(x, y) || RockAt(x, y) != null || WormAt(x, y) != null || Overhead(x, y)) continue;
+                    Step(x, y);
+                    return;
+                }
+            }
+
+            // a worm on his trail and soil under a boulder right next to him: dig under it to lure the worm beneath
+            foreach (var r in rocks)
+            {
+                int sx = r.X, sy = r.Y + 1;
+                if (r.Wobble > 0 || !In(sx, sy) || ground[sx, sy] != Soil || Math.Abs(sx - mx) + Math.Abs(sy - my) != 1) continue;
+                bool chased = false;
+                foreach (var w in worms)
+                    if (w.Dead == 0 && Math.Abs(w.X - mx) + Math.Abs(w.Y - my) <= 6 && TunnelStep(w.X, w.Y) >= 0) chased = true;
+                if (!chased) continue;
+                Step(sx, sy);
+                return;
+            }
+
+            // otherwise one step toward the nearest gem, preferring old tunnels and staying out from under boulders
+            int[] cost = new int[N * N], prev = new int[N * N];
+            bool[] done = new bool[N * N];
+            for (int k = 0; k < cost.Length; k++) { cost[k] = int.MaxValue; prev[k] = -1; }
+            cost[my * N + mx] = 0;
+            int goal = -1;
+            while (true)
+            {
+                int best = -1;
+                for (int k = 0; k < cost.Length; k++) if (!done[k] && cost[k] != int.MaxValue && (best < 0 || cost[k] < cost[best])) best = k;
+                if (best < 0) break;
+                done[best] = true;
+                int bx = best % N, by = best / N;
+                if (ground[bx, by] == Gem) { goal = best; break; }
+                for (int d = 0; d < 4; d++)
+                {
+                    int x = bx + DX[d], y = by + DY[d];
+                    if (!In(x, y) || RockAt(x, y) != null) continue;
+                    int c = ground[x, y] == Soil ? 3 : 1;
+                    if (Overhead(x, y)) c += 40;
+                    foreach (var w in worms) if (w.Dead == 0 && Math.Abs(w.X - x) + Math.Abs(w.Y - y) <= 1) c += 30;
+                    int k2 = y * N + x;
+                    if (cost[best] + c < cost[k2]) { cost[k2] = cost[best] + c; prev[k2] = best; }
+                }
+            }
+            if (goal < 0) { cheer = 12; return; }   // no gems left
+            int step = goal;
+            while (prev[step] != my * N + mx) step = prev[step];
+            Step(step % N, step / N);
+        }
+
+        // the miner moves to (x, y), digging it out and picking up a gem there
+        void Step(int x, int y)
+        {
+            mx = x; my = y;
+            if (ground[x, y] == Gem)
+            {
+                glint = 4;
+                ground[x, y] = Tunnel;
+                bool any = false;
+                foreach (int g in ground) if (g == Gem) any = true;
+                if (!any) cheer = 16;
+            }
+            ground[x, y] = Tunnel;
+        }
+
+        void MoveWorm(Worm w)
+        {
+            // through the tunnels toward the miner when there's a way, most of the time
+            int dir = rng.Next(10) < 8 ? TunnelStep(w.X, w.Y) : -1;
+            if (dir < 0)
+            {
+                if (!Open(w.X + w.Dx, w.Y + w.Dy) || rng.Next(6) == 0)
+                {
+                    var opts = new List<int>();
+                    for (int d = 0; d < 4; d++) if (Open(w.X + DX[d], w.Y + DY[d])) opts.Add(d);
+                    if (opts.Count == 0) return;
+                    int pick = opts[rng.Next(opts.Count)];
+                    w.Dx = DX[pick]; w.Dy = DY[pick];
+                }
+                // now and then a trapped worm chews a little way toward the miner
+                if (rng.Next(8) == 0 && TunnelStep(w.X, w.Y) < 0)
+                {
+                    int ddx = Math.Sign(mx - w.X), ddy = Math.Sign(my - w.Y);
+                    if (ddx != 0 && rng.Next(2) == 0) ddy = 0; else if (ddy != 0) ddx = 0;
+                    int x = w.X + ddx, y = w.Y + ddy;
+                    if (In(x, y) && ground[x, y] == Soil && RockAt(x, y) == null && RockAt(x, y - 1) == null) { ground[x, y] = Tunnel; w.X = x; w.Y = y; }
+                    return;
+                }
+            }
+            else { w.Dx = DX[dir]; w.Dy = DY[dir]; }
+            if (Open(w.X + w.Dx, w.Y + w.Dy) && WormAt(w.X + w.Dx, w.Y + w.Dy) == null) { w.X += w.Dx; w.Y += w.Dy; }
+        }
+
+        // the first step from (x, y) along the tunnels to the miner, or -1 when the tunnels don't reach him
+        int TunnelStep(int x, int y)
+        {
+            var first = new int[N * N];
+            for (int k = 0; k < first.Length; k++) first[k] = -2;
+            var q = new Queue<int>();
+            first[y * N + x] = -1; q.Enqueue(y * N + x);
+            while (q.Count > 0)
+            {
+                int c = q.Dequeue(), cx = c % N, cy = c / N;
+                if (cx == mx && cy == my) return first[c];
+                for (int d = 0; d < 4; d++)
+                {
+                    int nx = cx + DX[d], ny = cy + DY[d];
+                    if (!Open(nx, ny) || first[ny * N + nx] != -2) continue;
+                    first[ny * N + nx] = first[c] < 0 ? d : first[c];
+                    q.Enqueue(ny * N + nx);
+                }
+            }
+            return -1;
+        }
+
+        int[] Draw()
+        {
+            var px = new int[N * N];
+            for (int y = 0; y < Sky; y++) for (int x = 0; x < N; x++) px[y * N + x] = sky[y];
+            for (int y = Sky; y < N; y++)
+                for (int x = 0; x < N; x++)
+                {
+                    int g = ground[x, y], c = 0;
+                    if (g == Soil) c = layers[(y - Sky) * layers.Length / (N - Sky)];
+                    else if (g == Gem) c = (tick + x + y) % 12 == 0 ? 7 : gemColor;   // a glint now and then
+                    else if (cheer > 0 && (x + y + cheer) % 3 == 0) c = (cheer / 2) % 2 == 0 ? gemColor : 7;   // level cleared: tunnels sparkle
+                    px[y * N + x] = c;
+                }
+            foreach (var r in rocks)
+                if (r.Falling || r.Wobble == 0 || tick % 2 == 1) px[r.Y * N + r.X] = rockColor;   // a wobbling boulder blinks
+            foreach (var w in worms)
+                px[w.Y * N + w.X] = w.Dead == 0 ? wormColor : w.Dead % 2 == 0 ? 7 : 0;   // a zapped or squashed worm flickers out
+            if (zap > 0)
+                for (int s = 1; s < zapLen; s++) px[(zapY + zapDy * s) * N + zapX + zapDx * s] = beamColor;
+            px[my * N + mx] = hurt > 0 ? (hurt % 2 == 0 ? 1 : minerColor) : glint > 0 && glint % 2 == 0 ? gemColor : minerColor;
             return px;
         }
     }

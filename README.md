@@ -21,7 +21,9 @@ drawings and scrolling text, all in a playlist per display that keeps going from
   16×16 to suit the display. Each has its own speed setting:
   - Lava Clock: lava gathers into the time, then melts into a puddle.
   - Fireplace, Lava Lamp, Hyperspace, Rain on a Window.
+  - Mandelbrot Zoom: an endless dive into the Mandelbrot set, smooth-shaded on the Tivoo.
   - Snake Chase, Tetrix, Bouncing Balls, Brick Breaker.
+  - Gem Miner: a miner tunnels after gems, zapping glow worms and dropping boulders on them.
   - A waving Laos flag.
 - **Create.** A drawing editor, an 8-frame animation editor, an animated GIF importer, and scrolling text in
   any Windows font.
