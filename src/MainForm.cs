@@ -282,7 +282,7 @@ namespace AuraBoxControl
             StartReconnectTimer();
             foreach (var pl in players) if (pl.Cfg.Rotate) As(pl, delegate { SetPlaylist(true); });
             ThreadPool.QueueUserWorkItem(delegate { GetWeather(false); });
-            if (UpdateRepo.Length > 0) CheckForUpdates(false);   // quietly; only says something when there's a newer version
+            if (UpdateRepo.Length > 0 && cfg.CheckUpdates) CheckForUpdates(false);   // quietly; only says something when there's a newer version
             // portable app: if it was moved, point the "start with Windows" entry at the new location
             string run = ReadRunValue();
             bool tray = run.Contains("--tray");
@@ -3840,26 +3840,31 @@ namespace AuraBoxControl
             }));
             p.Controls.Add(backup);
 
-            var about = NewCard("About", 0, 424, W, 92);
+            var about = NewCard("About", 0, 424, W, 96);
             about.Controls.Add(new Label { Text = "VaVaVoom Control " + VersionText(AppVersion) + " — a portable app for Divoom pixel displays over Bluetooth.",
                                            Location = new Point(14, 34), AutoSize = true, UseMnemonic = false });
-            // Check for Updates turns into "Download x.y.z" when GitHub has a newer release (hidden until UpdateRepo is set)
+            // Check for Updates turns into "Download x.y.z" when GitHub has a newer release, which opens the release
+            // page to download it from (hidden when UpdateRepo is empty)
             updateBtn = Btn("Check for Updates", W - 172, 26, 158, delegate
             {
-                if (updateUrl != null) { try { System.Diagnostics.Process.Start(updateUrl); } catch (Exception) { } }
+                if (updateVersion != null) OpenUpdatePage();
                 else CheckForUpdates(true);
             });
             updateBtn.Visible = UpdateRepo.Length > 0;
             about.Controls.Add(updateBtn);
-            about.Controls.Add(Note("An independent app, not affiliated with, endorsed by or supported by Divoom, the maker of the AuraBox.\r\nLive weather and the Divoom gallery need an internet connection.", 14, 54));
+            about.Controls.Add(Note("Not affiliated with or endorsed by Divoom. Live weather and the Divoom gallery need the internet.", 14, 54));
+            var autoCheck = new CheckBox { Text = "Check for updates when VaVaVoom Control starts", Location = new Point(14, 70), AutoSize = true,
+                                           Checked = cfg.CheckUpdates, Visible = UpdateRepo.Length > 0 };
+            autoCheck.CheckedChanged += delegate { cfg.CheckUpdates = autoCheck.Checked; SaveSettings(); };
+            about.Controls.Add(autoCheck);
             p.Controls.Add(about);
             return p;
         }
 
         // ---------- version and updates ----------
-        // GitHub "owner/repo" whose latest release is compared with this version; empty until the project is published
-        const string UpdateRepo = "";
-        Button updateBtn; string updateUrl;
+        // GitHub "owner/repo" whose latest release is compared with this version (empty: no update check)
+        const string UpdateRepo = "JBA474/vavavoom-control";
+        Button updateBtn; string updateUrl; Version updateVersion;
 
         static Version AppVersion { get { return typeof(MainForm).Assembly.GetName().Version; } }
         static string VersionText(Version v) { return v.Major + "." + v.Minor + "." + Math.Max(0, v.Build); }
@@ -3890,7 +3895,7 @@ namespace AuraBoxControl
                         Version latest;
                         if (tag != null && Version.TryParse(tag.Contains(".") ? tag : tag + ".0", out latest) && latest > AppVersion)
                         {
-                            updateUrl = page;
+                            updateUrl = page; updateVersion = latest;
                             updateBtn.Text = "Download " + VersionText(latest); updateBtn.Tag = "primary"; Theme.Apply(updateBtn);
                             status.Text = "VaVaVoom Control " + VersionText(latest) + " is available: see Settings, About";
                         }
@@ -3901,6 +3906,12 @@ namespace AuraBoxControl
                 }
                 catch (InvalidOperationException) { }   // window closed meanwhile
             });
+        }
+
+        // the release page, where the newer version can be downloaded
+        void OpenUpdatePage()
+        {
+            try { System.Diagnostics.Process.Start(updateUrl ?? "https://github.com/" + UpdateRepo + "/releases"); } catch (Exception) { }
         }
 
         // a row of radio buttons that acts as its own group, so several rows can share one card

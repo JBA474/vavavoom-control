@@ -18,7 +18,7 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("VaVaVoom Control")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
 
 namespace AuraBoxControl
 {
@@ -1200,6 +1200,7 @@ namespace AuraBoxControl
         public int WindowW, WindowH; public bool WindowMax;   // the window's size when it last closed (0 = the standard size)
         public bool GalleryAnimate = true;                   // the Gallery plays every animated thumbnail
         public int FavoriteSort;                             // Favorites order: 0 A to Z, 1 newest first, 2 oldest first
+        public bool CheckUpdates = true;                     // look for a newer release on GitHub when the app starts
         // the Text page's scrolling message (also the playlist's Scrolling Text item)
         public string TextMessage = "I ❤️ U!", TextFont = "Tahoma";
         public int TextColor = 7, TextSpeed = 5;
@@ -1341,6 +1342,7 @@ namespace AuraBoxControl
                     if (wh.Length >= 2 && int.TryParse(wh[0], out ww) && int.TryParse(wh[1], out hh)) { s.WindowW = ww; s.WindowH = hh; s.WindowMax = wh.Length > 2 && wh[2] == "max"; }
                 }
                 else if (k == "gallery_animate") s.GalleryAnimate = v != "0";
+                else if (k == "check_updates") s.CheckUpdates = v != "0";
                 else if (k == "favorite_sort" && int.TryParse(v, out n)) s.FavoriteSort = Math.Max(0, Math.Min(2, n));
                 else if (k == "window")
                 {
@@ -1407,7 +1409,7 @@ namespace AuraBoxControl
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
                           "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\ncountdown=" + CountdownMinutes + "\r\ncountdown_to_date=" + (CountdownToDate ? 1 : 0) +
-                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
+                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
                           "\r\ntext_message=" + TextMessage.Replace("\r", " ").Replace("\n", " ") + "\r\ntext_font=" + TextFont +
                           "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
