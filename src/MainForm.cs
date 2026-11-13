@@ -88,10 +88,31 @@ namespace AuraBoxControl
 
         // live animations generated on this PC, frame by frame
         // Make draws 10 x 10 (palette indexes); Make16, where there is one, draws 16 x 16 for the Tivoo (RGB colors)
-        class LiveAnim { public string Id, Name, About; public Func<Func<int[]>> Make, Make16; }
+        // Make128, where there is one, makes whole loops for the Tiivoo 2's 128 x 128 screen (Loop128)
+        class LiveAnim { public string Id, Name, About; public Func<Func<int[]>> Make, Make16; public Func<Loop128> Make128; }
 
         // a 16 x 16 animation's palette frames (Palette16) as the RGB pictures the Tivoo takes
         static Func<int[]> Rgb16(Func<int[]> next) { return () => Palette16.ToRgb(next()); }
+        // a full-screen Tiivoo 2 loop shown on a small display (and in the page's preview): its frames, the middle
+        // squeezed to 16 x 16 (other displays get their own versions later)
+        static Func<int[]> Squeezed(Loop128 loop)
+        {
+            List<int[]> frames = null; int at = 0;
+            return () =>
+            {
+                if (frames == null)
+                {
+                    int ms; double play; frames = new List<int[]>();
+                    foreach (var f in loop.Next(out ms, out play))
+                    {
+                        var mid = new int[128 * 128];
+                        for (int y = 0; y < 128; y++) Array.Copy(f, y * Tiivoo2.Wide + (Tiivoo2.Wide - 128) / 2, mid, y * 128, 128);
+                        frames.Add(Proto.Shrink128(mid));
+                    }
+                }
+                return frames[at++ % frames.Count];
+            };
+        }
 
         // the animation drawn for a display of this size: its own 16 x 16 version on a Tivoo, else the 10 x 10 one (stretched)
         static Func<int[]> MakeFor(LiveAnim la, int size) { return size == 16 && la.Make16 != null ? la.Make16() : la.Make(); }
@@ -108,7 +129,7 @@ namespace AuraBoxControl
                            About = "Flickering flames rise and fade from white-hot to yellow to red." },
             new LiveAnim { Id = "fireworks", Name = "Fireworks", Make = () => new Fireworks().Next, Make16 = () => Rgb16(new Fireworks(16).Next),
                            About = "A 90-second show: a rocket now and then, building to a finale of bursts and one big boom." },
-            new LiveAnim { Id = "heart", Name = "Heart Monitor", Make = () => new HeartMonitor().Next, Make16 = () => Rgb16(new HeartMonitor(16).Next),
+            new LiveAnim { Id = "heart", Name = "Heart Monitor", Make = () => new HeartMonitor().Next, Make16 = () => Rgb16(new HeartMonitor(16).Next), Make128 = () => new HeartMonitor128(),
                            About = "A heartbeat traces across the screen like a bedside monitor, with the odd skipped or extra beat and a rare flatline." },
             new LiveAnim { Id = "balls", Name = "Bouncing Balls", Make = () => new BouncingBalls().Next, Make16 = () => Rgb16(new BouncingBalls(16).Next),
                            About = "Three balls bounce with gravity and get a fresh kick when they settle." },
@@ -118,10 +139,24 @@ namespace AuraBoxControl
                            About = "The flag of Laos ripples in a breeze." },
             new LiveAnim { Id = "lava", Name = "Lava Lamp", Make = () => new LavaLamp().Next, Make16 = () => Rgb16(new LavaLamp(16).Next),
                            About = "Slow blobs of lava drift, merge and split with a magenta glow." },
-            new LiveAnim { Id = "mandelbrot", Name = "Mandelbrot Zoom", Make = () => new Mandelbrot().Next, Make16 = () => new Mandelbrot(16).Next,
+            new LiveAnim { Id = "mandelbrot", Name = "Mandelbrot Zoom", Make = () => new Mandelbrot().Next, Make16 = () => new Mandelbrot(16).Next, Make128 = () => new Mandelbrot128(),
                            About = "Dives into the edge of the Mandelbrot set toward its spirals and seahorses as the colors cycle, then pulls back out and heads somewhere new." },
             new LiveAnim { Id = "miner", Name = "Gem Miner", Make = () => new GemMiner().Next, Make16 = () => Rgb16(new GemMiner(16).Next),
                            About = "A miner digs through the earth after buried gems. His lamp zaps glow worms down the tunnels, and boulders he digs under drop on them." },
+            new LiveAnim { Id = "swarm", Name = "Star Swarm", Make = () => new StarSwarm().Next, Make16 = () => Rgb16(new StarSwarm(16).Next),
+                           About = "Alien saucers, fighters and bombers swoop into formation, then dive at the rocket below with engines blazing to drop bombs. It dodges and shoots back. Each wave comes faster, in new colors." },
+            new LiveAnim { Id = "aquarium", Name = "Aquarium", Make = () => new Aquarium().Next, Make16 = () => new Aquarium(16).Next, Make128 = () => new Aquarium128(),
+                           About = "A planted tank. On the Tiivoo 2: a blue tang drifts from side to side while a clownfish and its little follower loop around by the plants, a starfish creeps over the glass, a pirate skeleton creaks at a ship's wheel, and bubbles rise to the sound of bubbling water. On the smaller screens: a goldfish, an angelfish and a school of neon tetras wander among swaying plants." },
+            new LiveAnim { Id = "aquaclock", Name = "Aquarium Clock", Make = () => new Aquarium().Next, Make16 = () => new Aquarium(16).Next, Make128 = () => new Aquarium128(),
+                           About = "The Tiivoo 2's aquarium as one of its own clock faces: the Tiivoo 2 keeps the time itself, shown along the bottom over the gravel, with the bubbling water sound. Made on this PC and sent straight to the Tiivoo 2 (nothing is uploaded). Other displays show the plain aquarium." },
+            new LiveAnim { Id = "slots", Name = "Slot Machine", Make = () => Squeezed(new SlotMachine160()), Make16 = () => Squeezed(new SlotMachine160()), Make128 = () => new SlotMachine160(),
+                           About = "A slot machine (made for the Tiivoo 2's full screen) with sound through its speaker: the lever clunks, the reels tick round and thunk to a stop, small wins ding, and now and then 7-7-7 hits the jackpot with flashing lights, a fanfare and a shower of coins." },
+            new LiveAnim { Id = "robot", Name = "Retro Robot", Make = () => Squeezed(new Robot160()), Make16 = () => Squeezed(new Robot160()), Make128 = () => new Robot160(),
+                           About = "A chrome retro robot (made for the Tiivoo 2's full screen): a red light scans across its visor, its mouth lights dance as it beeps and boops through the Tiivoo 2's speaker, gauges swing, lamps blink, and now and then it waves." },
+            new LiveAnim { Id = "jellyfish", Name = "Jellyfish", Make = () => new Jellyfish().Next, Make16 = () => new Jellyfish(16).Next,
+                           About = "Glowing jellyfish in a dark tank: each bell squeezes to push itself along and opens to glide, tilting toward where it is going, its tentacles trailing behind each push and rippling." },
+            new LiveAnim { Id = "nextholiday", Name = "Days to Next Holiday", Make = () => new HolidayCountdown().Next, Make16 = () => new HolidayCountdown(16).Next,
+                           About = "Counts the days to the next US holiday, from New Year's Day to Christmas, with its name scrolling by in its colors. On the day itself, confetti and a greeting." },
             new LiveAnim { Id = "lavaclock", Name = "Lava Clock", Make = () => new LavaClock(H24).Next, Make16 = () => Rgb16(new LavaClock(H24, 16).Next),
                            About = "Lava drifts, and at each new minute the ooze slowly gathers into the time, holds, then melts away." },
             new LiveAnim { Id = "countdown", Name = "Countdown Timer", Make = () => new Countdown().Next, Make16 = () => Rgb16(new Countdown(16).Next),
@@ -148,11 +183,12 @@ namespace AuraBoxControl
         {
             cfg = settings;
             foreach (var d in cfg.Devices) players.Add(NewPlayer(d, null));
-            sel = players[0];
+            sel = players.Find(pl => pl.Cfg.Mac.Length > 0 && pl.Cfg.Mac == cfg.SelectedDevice) ?? players[0];   // the display picked last time
             startHidden = hidden || settings.StartInTray;
             clock24 = cfg.Clock24; LavaClock.FixedTheme = cfg.LavaTheme; LavaClock.Puddle = cfg.LavaPuddle; Countdown.Minutes = cfg.CountdownMinutes;
             Countdown.Until = cfg.CountdownToDate ? cfg.CountdownUntil : DateTime.MinValue;
             HeartMonitor.Speed = () => cfg.SpeedOf("heart");   // its slider sets the heart rate
+            Mandelbrot128.Speed = () => cfg.SpeedOf("mandelbrot");   // the Tiivoo 2 zoom's time per frame
             DivoomAccount.Email = cfg.DivoomEmail; DivoomAccount.UserId = cfg.DivoomUserId; DivoomAccount.Token = cfg.DivoomToken;
             ApplyTivooClock();
             cfg.ThermoFahrenheit = cfg.Fahrenheit;   // one unit setting now covers the weather and the box's own thermometer
@@ -173,6 +209,7 @@ namespace AuraBoxControl
             // sidebar groups; the page order here is the sidebar order
             AddGroup("Display");
             AddPage("\uE768", "Now", BuildNowPage());
+            AddPage("\uE7F4", "All Displays", BuildWallPage());
             AddPage("\uE7F5", "Original Modes", BuildBoxPage());
             AddPage("\uE823", "Clock & Weather", BuildClockWeatherPage());
             AddPage("\uE8B2", "Animations", BuildLivePage());
@@ -655,9 +692,16 @@ namespace AuraBoxControl
             string current = deviceBox.Text;
             deviceBox.Items.Clear();
             string pick = null;
-            foreach (var d in PairedDevices.List())
+            var paired = PairedDevices.List();
+            // A to Z by the name shown, the Tiivoo 2 sorted as "Tivoo 2" so it comes after the Tivoo
+            Func<string, string> sortName = n => DeviceName(n).Replace("Tiivoo", "Tivoo");
+            paired.Sort((a, b) => string.Compare(sortName(a.Key), sortName(b.Key), StringComparison.CurrentCultureIgnoreCase));
+            foreach (var d in paired)
             {
-                string item = DeviceName(d.Key) + "  (" + PairedDevices.Mac(d.Value) + ")";
+                // only Divoom displays (and any display already in use, whatever it is called)
+                string mac = PairedDevices.Mac(d.Value);
+                if (!Device.IsDisplay(d.Key) && !cfg.Devices.Exists(x => x.Mac == mac)) continue;
+                string item = DeviceName(d.Key) + "  (" + mac + ")";
                 deviceBox.Items.Add(item);
                 if (pick == null && dcfg.Mac.Length == 0 && d.Key.IndexOf("AuraBox", StringComparison.OrdinalIgnoreCase) >= 0) pick = item;
                 if (dcfg.Mac.Length > 0 && item.Contains(dcfg.Mac)) pick = item;
@@ -670,10 +714,17 @@ namespace AuraBoxControl
         }
 
         // Windows pairs the box as "AuraBox-audio"; the app only uses its display link, so show plain "AuraBox"
+        // the name a display goes by in the app, tidied from its Bluetooth name: "Divoom Tiivoo 2" is "Tiivoo 2", and the
+        // Ditoo Pro (it pairs as "DitooPro-Audio-<owner>" or "DitooPro-<owner>") is "Ditoo Pro"
         static string DeviceName(string name)
         {
-            foreach (string tail in new[] { "-audio", " audio" })
-                if (name.EndsWith(tail, StringComparison.OrdinalIgnoreCase)) return name.Substring(0, name.Length - tail.Length);
+            foreach (string tail in new[] { "-audio", " audio" })   // also mid-name
+            {
+                int at = name.IndexOf(tail, StringComparison.OrdinalIgnoreCase);
+                if (at > 0) { name = name.Remove(at, tail.Length); break; }
+            }
+            if (name.StartsWith("DitooPro", StringComparison.OrdinalIgnoreCase)) return "Ditoo Pro";
+            if (name.StartsWith("Divoom ", StringComparison.OrdinalIgnoreCase) && name.Length > 7) name = name.Substring(7);
             return name;
         }
 
@@ -800,14 +851,21 @@ namespace AuraBoxControl
 
         Player NewPlayer(DeviceSettings d, string pairedName)
         {
-            return new Player { Cfg = d, Box = Device.Create(d.Kind), Name = pairedName != null ? DeviceName(pairedName) : PairedName(d.Mac, d.Kind) };
+            var pl = new Player { Cfg = d, Box = Device.Create(d.Kind), Name = pairedName != null ? DeviceName(pairedName) : PairedName(d.Mac, d.Kind) };
+            // a Tiivoo 2 saved before it had its own kind (as a Tivoo): its name tells
+            if (Device.KindOf(pl.Name) == "tiivoo2" && d.Kind != "tiivoo2") { d.Kind = "tiivoo2"; pl.Box = Device.Create(d.Kind); }
+            Dim(pl);
+            return pl;
         }
+
+        // the Ditoo Pro's LEDs are brighter than the Tivoo's: scale it down so the same slider level looks the same
+        void Dim(Player pl) { if (pl.Name.IndexOf("ditoo", StringComparison.OrdinalIgnoreCase) >= 0) pl.Box.BrightnessScale = cfg.DitooBrightness / 100.0; }
 
         // the display's name as paired in Windows ("Tivoo"), or its kind while it isn't paired
         static string PairedName(string mac, string kind)
         {
             foreach (var d in PairedDevices.List()) if (PairedDevices.Mac(d.Value) == mac) return DeviceName(d.Key);
-            return kind == "tivoo" ? "Tivoo" : "AuraBox";
+            return kind == "tiivoo2" ? "Tiivoo 2" : kind == "tivoo" ? "Tivoo" : "AuraBox";
         }
 
         // switch the window to a display, adding it the first time (it gets its own settings and playlist)
@@ -827,7 +885,7 @@ namespace AuraBoxControl
                     players.Add(pl);
                 }
                 pl.Cfg.Mac = mac; pl.Cfg.Kind = Device.KindOf(name);
-                pl.Box = Device.Create(pl.Cfg.Kind); pl.Name = DeviceName(name);
+                pl.Box = Device.Create(pl.Cfg.Kind); pl.Name = DeviceName(name); Dim(pl);
                 SaveSettings();
             }
             SelectPlayer(pl);
@@ -837,6 +895,7 @@ namespace AuraBoxControl
         void SelectPlayer(Player pl)
         {
             sel = pl;
+            if (pl.Cfg.Mac.Length > 0 && cfg.SelectedDevice != pl.Cfg.Mac) { cfg.SelectedDevice = pl.Cfg.Mac; SaveSettings(); }   // start on it next time
             RefreshDevices();
             ShowConnection();
             ShowRotate();
@@ -1216,7 +1275,7 @@ namespace AuraBoxControl
                 {
                     var la = la0;
                     StopRotationForManual();
-                    StartJob(delegate { StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), DateTime.MaxValue); });
+                    StartJob(delegate { PlayLiveAnim(la, DateTime.MaxValue); });
                     showing = la.Name;
                     status.Text = la.Name + " playing";
                 }
@@ -1319,6 +1378,7 @@ namespace AuraBoxControl
             Tivoo.ClockWeather = cfg.TivooClockWeather; Tivoo.ClockTemp = cfg.TivooClockTemp; Tivoo.ClockCalendar = cfg.TivooClockCalendar;
             Tivoo.Hour24 = H24;
             Tivoo.Vivid = cfg.TivooVivid;
+            DivoomCloud.PageSize = cfg.GalleryPageSize;
             AuraBox.ClockH24 = H24; AuraBox.ClockColor = cfg.AuraClockColor;
         }
 
@@ -1396,7 +1456,7 @@ namespace AuraBoxControl
             p.Controls.Add(fx);
 
             // tools: scoreboard, countdown, stopwatch, noise meter
-            var tools = NewCard("Tools", 0, 280, CW, 112);
+            var tools = NewCard("Tools", 0, 280, CW, 148);
             tools.Controls.Add(new Label { Text = "Red:", Location = new Point(14, 44), AutoSize = true });
             var red = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(56, 40), Width = 60 };
             tools.Controls.Add(new Label { Text = "Blue:", Location = new Point(128, 44), AutoSize = true });
@@ -1418,12 +1478,19 @@ namespace AuraBoxControl
                 int m = (int)mm.Value, sec = (int)ss.Value;
                 OnTivoo(tv => tv.ShowCountdown(m, sec), "Tivoo countdown: " + m + ":" + sec.ToString("00"));
             }));
-            tools.Controls.Add(Btn("Stopwatch", 316, 73, 110, delegate { OnTivoo(tv => tv.ShowStopwatch(), "Tivoo stopwatch"); }));
-            tools.Controls.Add(Btn("Noise Meter", 434, 73, 120, delegate { OnTivoo(tv => tv.ShowNoiseMeter(), "Tivoo noise meter"); }));
+            tools.Controls.Add(Btn("Stop", 308, 73, 70, delegate { OnTivoo(tv => tv.StopCountdown(), "Countdown stopped"); }));
+            // the stopwatch and noise meter run on the device itself; these are the Divoom app's own buttons for them
+            tools.Controls.Add(new Label { Text = "Stopwatch:", Location = new Point(14, 116), AutoSize = true });
+            tools.Controls.Add(Btn("Start", 100, 109, 70, delegate { OnTivoo(tv => tv.ShowStopwatch(), "Stopwatch started"); }));
+            tools.Controls.Add(Btn("Pause", 176, 109, 70, delegate { OnTivoo(tv => tv.StopwatchControl(0), "Stopwatch paused"); }));
+            tools.Controls.Add(Btn("Reset", 252, 109, 70, delegate { OnTivoo(tv => tv.StopwatchControl(2), "Stopwatch reset"); }));
+            tools.Controls.Add(new Label { Text = "Noise meter:", Location = new Point(346, 116), AutoSize = true });
+            tools.Controls.Add(Btn("On", 440, 109, 60, delegate { OnTivoo(tv => tv.ShowNoiseMeter(), "Noise meter on"); }));
+            tools.Controls.Add(Btn("Off", 506, 109, 60, delegate { OnTivoo(tv => tv.NoiseMeterOff(), "Noise meter off"); }));
             p.Controls.Add(tools);
 
             // the Tivoo's built-in games and their buttons
-            var games = NewCard("Games", 0, 402, CW, 112);
+            var games = NewCard("Games", 0, 438, CW, 112);
             var game = numbers("Game"); game.Location = new Point(14, 42); game.Width = 110; games.Controls.Add(game);
             games.Controls.Add(Btn("Play", 132, 39, 80, delegate { int n = game.SelectedIndex; OnTivoo(tv => tv.ShowGame(n), "Tivoo game " + (n + 1)); }, true));
             string[] keys = { "Go", "◀", "▶", "▲", "▼", "OK" };
@@ -1436,7 +1503,7 @@ namespace AuraBoxControl
             p.Controls.Add(games);
 
             // notification icons, and how strongly colors are boosted for the Tivoo's LEDs
-            var more = NewCard("Notifications and Colors", 0, 524, CW, 112);
+            var more = NewCard("Notifications and Colors", 0, 560, CW, 112);
             more.Controls.Add(new Label { Text = "Notification:", Location = new Point(14, 44), AutoSize = true });
             var notify = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(110, 40), Width = 150 };
             notify.Items.AddRange(Proto.NotifyNames); notify.SelectedIndex = 2;
@@ -1447,6 +1514,183 @@ namespace AuraBoxControl
                      delegate (int v) { cfg.TivooVivid = v; Tivoo.Vivid = v; SaveSettings(); status.Text = "Color boost: " + (v == 0 ? "off" : v == 1 ? "vivid" : "extra vivid") + " (applies to the next picture sent)"; });
             more.Controls.Add(Note("Deeper, richer colors on the LEDs;\r\nthe app's previews stay as they are.", 380, 70));
             p.Controls.Add(more);
+
+            // the Tiivoo 2's own sound and screens (shown only for it)
+            var t2 = NewCard("Tiivoo 2: Sound and Screens", 0, 682, CW, 326);
+            Func<Action<Tiivoo2>, string, bool> onT2 = delegate (Action<Tiivoo2> act, string what)
+            {
+                var d = box as Tiivoo2;
+                if (d == null) { status.Text = "Pick the Tiivoo 2 first"; return false; }
+                StopRotationForManual();
+                Run(delegate { act(d); }, what);
+                return true;
+            };
+            t2.Controls.Add(new Label { Text = "White noise:", Location = new Point(14, 44), AutoSize = true });
+            var sound = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(110, 40), Width = 150, AccessibleName = "White noise sound" };
+            sound.Items.AddRange(Tiivoo2.NoiseSounds); sound.SelectedIndex = 4;
+            t2.Controls.Add(sound);
+            var noiseVol = new TrackBar { Minimum = 5, Maximum = 100, SmallChange = 5, LargeChange = 10, Value = 40, Location = new Point(266, 36), Width = 130, TickStyle = TickStyle.None, AccessibleName = "White noise volume" };
+            t2.Controls.Add(noiseVol);
+            var noiseTime = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(402, 40), Width = 110, AccessibleName = "White noise time" };
+            noiseTime.Items.AddRange(new object[] { "15 minutes", "30 minutes", "1 hour", "Until stopped" }); noiseTime.SelectedIndex = 1;
+            t2.Controls.Add(noiseTime);
+            Func<int[]> mix = delegate { var v = new int[8]; v[sound.SelectedIndex] = noiseVol.Value; return v; };
+            Func<int> minutes = () => new[] { 15, 30, 60, 0 }[noiseTime.SelectedIndex];
+            t2.Controls.Add(Btn("Play", 520, 37, 70, delegate { var v = mix(); int m = minutes(); onT2(d => d.WhiteNoise(v, m, true), "White noise: " + sound.Text); }, true));
+            t2.Controls.Add(Btn("Stop", 596, 37, 70, delegate { var v = mix(); onT2(d => d.WhiteNoise(v, 0, false), "White noise off"); }));
+
+            t2.Controls.Add(new Label { Text = "FM radio:", Location = new Point(14, 92), AutoSize = true });
+            var fm = new NumericUpDown { Location = new Point(110, 88), Width = 80, Minimum = 87.5m, Maximum = 108.0m, Increment = 0.1m, DecimalPlaces = 1,
+                                         Value = (decimal)Math.Max(87.5, Math.Min(108.0, cfg.FmMhz)), AccessibleName = "FM frequency" };
+            t2.Controls.Add(fm);
+            t2.Controls.Add(new Label { Text = "MHz", Location = new Point(196, 92), AutoSize = true, Tag = "subtle" });
+            t2.Controls.Add(Btn("Tune In", 240, 85, 96, delegate
+            {
+                double mhz = (double)fm.Value; cfg.FmMhz = mhz; SaveSettings();
+                onT2(d => d.FmTune(mhz), "FM radio " + mhz.ToString("0.0") + " MHz");
+            }, true));
+            t2.Controls.Add(Btn("Bluetooth Audio", 342, 85, 140, delegate { onT2(d => d.BluetoothAudio(), "Tiivoo 2 back to Bluetooth audio"); }));
+
+            // lyrics (for music playing through it): its 16 backgrounds and 6 ways the lines arrive
+            t2.Controls.Add(new Label { Text = "Lyrics:", Location = new Point(14, 140), AutoSize = true });
+            var lyricBack = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(110, 136), Width = 130, AccessibleName = "Lyrics background" };
+            for (int i = 1; i <= 16; i++) lyricBack.Items.Add("Background " + i);
+            lyricBack.SelectedIndex = 0;
+            t2.Controls.Add(lyricBack);
+            var lyricFx = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(246, 136), Width = 160, AccessibleName = "Lyrics text effect" };
+            lyricFx.Items.AddRange(Tiivoo2.LyricEffects); lyricFx.SelectedIndex = 0;
+            t2.Controls.Add(lyricFx);
+            t2.Controls.Add(Btn("Show Lyrics", 412, 133, 120, delegate
+            {
+                int lyricBg = lyricBack.SelectedIndex, lyricHow = lyricFx.SelectedIndex;
+                onT2(d => d.ShowLyrics(lyricBg, lyricHow), "Tiivoo 2 lyrics (for music playing through it)");
+            }, true));
+
+            t2.Controls.Add(new Label { Text = "Screens:", Location = new Point(14, 188), AutoSize = true });
+            t2.Controls.Add(Btn("Photos", 110, 181, 96, delegate { onT2(d => d.ShowPhotos(), "Tiivoo 2 photo album"); }));
+            t2.Controls.Add(Btn("SD Card Music", 212, 181, 130, delegate { onT2(d => d.SdCardMusic(), "Tiivoo 2 playing its SD card"); }));
+
+            // a Pomodoro timer: minutes of work, short break, long break, and how many rounds
+            t2.Controls.Add(new Label { Text = "Pomodoro:", Location = new Point(14, 236), AutoSize = true });
+            Func<int, int, int, string, NumericUpDown> minutesBox = delegate (int x, int v, int max, string name)
+            {
+                var b = new NumericUpDown { Location = new Point(x, 232), Width = 52, Minimum = 1, Maximum = max, Value = v, AccessibleName = name };
+                t2.Controls.Add(b); return b;
+            };
+            var work = minutesBox(110, 25, 120, "Work minutes");
+            t2.Controls.Add(new Label { Text = "work", Location = new Point(164, 236), AutoSize = true, Tag = "subtle" });
+            var shortRest = minutesBox(206, 5, 60, "Short break minutes");
+            t2.Controls.Add(new Label { Text = "break", Location = new Point(260, 236), AutoSize = true, Tag = "subtle" });
+            var longRest = minutesBox(306, 15, 60, "Long break minutes");
+            t2.Controls.Add(new Label { Text = "long break", Location = new Point(360, 236), AutoSize = true, Tag = "subtle" });
+            var rounds = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(436, 232), Width = 92, AccessibleName = "Pomodoro rounds" };
+            rounds.Items.AddRange(new object[] { "Work only", "1 round", "2 rounds", "3 rounds", "4 rounds" }); rounds.SelectedIndex = 4;
+            t2.Controls.Add(rounds);
+            var ding = new CheckBox { Text = "Sound", Checked = true, Location = new Point(536, 234), AutoSize = true, AccessibleName = "Pomodoro sound" };
+            t2.Controls.Add(ding);
+            t2.Controls.Add(Btn("Start", 600, 229, 70, delegate
+            {
+                int w = (int)work.Value, s = (int)shortRest.Value, l = (int)longRest.Value, r = rounds.SelectedIndex; bool on = ding.Checked;
+                onT2(d => d.Pomodoro(w, s, l, r, on), "Pomodoro started: " + w + " minutes of work (stop it early on the Tiivoo 2)");
+            }, true));
+            t2.Controls.Add(Note("The Pomodoro timer keeps the screen until it ends or is stopped on the Tiivoo 2. Visualizers, games,\r\nStopwatch, Scoreboard, Countdown and Noise Meter: the cards above.", 14, 268));
+            p.Controls.Add(t2);
+
+            // the Tiivoo 2's clock faces, from Divoom's clock store (ClockStore; needs the Divoom account)
+            var faces = NewCard("Tiivoo 2: Clock Faces", 0, 1018, CW, 340);
+            faces.Controls.Add(new Label { Text = "Shelf:", Location = new Point(14, 44), AutoSize = true });
+            var shelf = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(110, 40), Width = 220, AccessibleName = "Clock face shelf" };
+            faces.Controls.Add(shelf);
+            var faceIcons = new ImageList { ImageSize = new Size(64, 64), ColorDepth = ColorDepth.Depth24Bit };
+            var faceView = new ListView { Location = new Point(14, 80), Size = new Size(CW - 28, 214), View = View.LargeIcon, LargeImageList = faceIcons,
+                                          MultiSelect = false, HideSelection = false, BorderStyle = BorderStyle.None, AccessibleName = "Clock faces" };
+            AccentIcons(faceView);
+            faces.Controls.Add(faceView);
+            var faceNote = Note("", 14, 304);
+            faces.Controls.Add(faceNote);
+            var shelves = new List<KeyValuePair<int, string>>();
+            int faceGen = 0;
+            Action showFace = delegate
+            {
+                if (faceView.SelectedItems.Count == 0) { status.Text = "Pick a clock face first"; return; }
+                var face = (ClockStore.Face)faceView.SelectedItems[0].Tag;
+                onT2(d => d.ShowClockFace(face.Id, face.Name), "Tiivoo 2 clock face: " + face.Name);
+            };
+            faces.Controls.Add(Btn("Show on Tiivoo 2", 340, 37, 160, showFace, true));
+            faceView.ItemActivate += delegate { showFace(); };
+            // one shelf's faces, then their pictures one by one (newest request wins)
+            Action loadShelf = delegate
+            {
+                int k = shelf.SelectedIndex;
+                if (k < 0) return;
+                int gen = ++faceGen;
+                faceView.Items.Clear(); faceIcons.Images.Clear();
+                faceNote.Text = "Loading clock faces...";
+                int id = k == 0 ? -1 : shelves[k - 1].Key;
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        var list = id < 0 ? ClockStore.Mine() : ClockStore.Faces(id, 1, 60);
+                        BeginInvoke((Action)delegate
+                        {
+                            if (gen != faceGen) return;
+                            faceView.BeginUpdate();
+                            foreach (var f in list)
+                            {
+                                faceIcons.Images.Add(new Bitmap(64, 64));
+                                faceView.Items.Add(new ListViewItem(f.Name, faceIcons.Images.Count - 1) { Tag = f });
+                            }
+                            faceView.EndUpdate();
+                            faceNote.Text = list.Count + " clock faces. Double-click one to show it; the Tiivoo 2 fetches its parts through VaVaVoom.";
+                        });
+                        for (int i = 0; i < list.Count && gen == faceGen; i++)
+                        {
+                            Bitmap pic = null;
+                            try { pic = ClockStore.Preview(list[i], 64); } catch (Exception) { }
+                            if (pic == null) continue;
+                            int at = i;
+                            BeginInvoke((Action)delegate { if (gen == faceGen && at < faceIcons.Images.Count) { faceIcons.Images[at] = pic; faceView.Invalidate(); } });
+                        }
+                    }
+                    catch (Exception e) { BeginInvoke((Action)delegate { if (gen == faceGen) faceNote.Text = e.Message; }); }
+                });
+            };
+            shelf.SelectedIndexChanged += delegate { loadShelf(); };
+            // the shelves, once: after sign-in and once the Tiivoo 2 has said who it is
+            bool shelvesAsked = false;
+            Action loadShelves = delegate
+            {
+                if (shelvesAsked) return;
+                if (!DivoomAccount.SignedIn) { faceNote.Text = "Sign in to Divoom (Gallery tab, Divoom Account button) to use the clock store."; return; }
+                if (!(box is Tiivoo2) || !box.Connected) { faceNote.Text = "Connect the Tiivoo 2 to load its clock faces."; return; }
+                shelvesAsked = true;
+                faceNote.Text = "Loading the clock store...";
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        for (int w = 0; w < 30 && ClockStore.DeviceId == 0; w++) Thread.Sleep(200);
+                        if (ClockStore.DeviceId == 0) throw new Exception("The Tiivoo 2 hasn't said its Divoom registration; reconnect it and try again.");
+                        var got = ClockStore.Categories();
+                        BeginInvoke((Action)delegate
+                        {
+                            shelves.Clear(); shelves.AddRange(got);
+                            shelf.Items.Clear(); shelf.Items.Add("My Clocks");
+                            foreach (var s in got) shelf.Items.Add(s.Value);
+                            shelf.SelectedIndex = 0;
+                        });
+                    }
+                    catch (Exception e) { shelvesAsked = false; BeginInvoke((Action)delegate { faceNote.Text = e.Message; }); }
+                });
+            };
+            faces.VisibleChanged += delegate { if (faces.Visible) loadShelves(); };
+            shelf.DropDown += delegate { loadShelves(); };
+            faceView.Click += delegate { loadShelves(); };
+            p.Controls.Add(faces);
+            Action t2Shown = delegate { t2.Visible = sel.Box is Tiivoo2; faces.Visible = t2.Visible; };
+            t2Shown();
+            deviceChanged += t2Shown;
             return p;
         }
 
@@ -1682,6 +1926,7 @@ namespace AuraBoxControl
             header("MINE");
             list.Add(new GallerySource { Title = "★  Favorites 16×16", Kind = "fav", Arg = 16 });   // Arg: the designs' size
             list.Add(new GallerySource { Title = "★  Favorites 10×10", Kind = "fav", Arg = 10 });
+            list.Add(new GallerySource { Title = "★  Favorites 128×128", Kind = "fav", Arg = 128 });
             list.Add(new GallerySource { Title = "My Divoom Likes", Kind = "likes" });
             list.Add(new GallerySource { Title = "My Divoom Uploads", Kind = "uploads" });
             header("DIVOOM 16×16");
@@ -1694,6 +1939,11 @@ namespace AuraBoxControl
             for (int k = 0; k < topics.Length; k++)
                 list.Add(new GallerySource { Title = topics[k], Kind = "d16", Arg = classify[k], Sort = k == 1 ? 0 : 1,   // Newest by date, the rest most liked
                                              Query = topics[k] == "Characters" ? "4,33" : null });                       // more categories shown with it
+            // the same topics in Divoom's 128 x 128 art (for the Tiivoo 2; other displays get it shrunk)
+            header("DIVOOM 128×128");
+            for (int k = 0; k < topics.Length; k++)
+                list.Add(new GallerySource { Title = topics[k], Kind = "d128", Arg = classify[k], Sort = k == 1 ? 0 : 1,
+                                             Query = topics[k] == "Characters" ? "4,33" : null });
             // each holiday: the Divoom searches whose results it shows together (Holidays.cs)
             header("HOLIDAYS");
             foreach (var h in Holidays.All) list.Add(new GallerySource { Title = h.Name, Kind = "holiday", Query = h.Searches });
@@ -1718,12 +1968,14 @@ namespace AuraBoxControl
             switch (s.Kind)
             {
                 case "d16":
-                    var d16 = DivoomCloud16.List(s.Arg, s.Sort, page, out total);
+                case "d128":
+                    bool big = s.Kind == "d128";
+                    var d16 = DivoomCloud16.List(s.Arg, s.Sort, page, out total, big);
                     if (!string.IsNullOrEmpty(s.Query))   // more categories on the same pages (Characters: 23 and 4)
                         foreach (string c in s.Query.Split(','))
                         {
                             int more;
-                            d16.AddRange(DivoomCloud16.List(int.Parse(c), s.Sort, page, out more));
+                            d16.AddRange(DivoomCloud16.List(int.Parse(c), s.Sort, page, out more, big));
                         }
                     // holiday designs belong under their holiday (Halloween's pumpkins and ghosts, Christmas, Easter...):
                     // the topic lists leave them out (Recommended and Newest show everything); checked on the original
@@ -1785,6 +2037,8 @@ namespace AuraBoxControl
                 c = countAt(mid);
                 if (c > 0) { lo = mid; loCount = c; } else hi = mid;
             }
+            // the Gallery's page size changed meanwhile: the pages measured were of different sizes, so the answer is wrong
+            if (DivoomCloud.PageSize != size) throw new InvalidOperationException("The page size changed while measuring");
             return lo * size + loCount;
         }
 
@@ -1797,6 +2051,7 @@ namespace AuraBoxControl
 
         static List<int[]> CloudFrames(string id)
         {
+            if (id.StartsWith(DivoomCloud16.Prefix128)) return DivoomCloud16.Frames128(id.Substring(DivoomCloud16.Prefix128.Length));
             if (id.StartsWith(DivoomCloud16.Prefix)) return DivoomCloud16.Frames(id.Substring(DivoomCloud16.Prefix.Length));
             return id.StartsWith(LaMetricIcons.Prefix) ? LaMetricIcons.Frames(id.Substring(LaMetricIcons.Prefix.Length)) : DivoomCloud.Frames(id);
         }
@@ -1814,7 +2069,7 @@ namespace AuraBoxControl
 
             // the sources down the left: section headings (not pickable) and the lists under them
             const int NavW = 176, X = NavW + 10, VW = W - X;
-            var nav = new AccessibleListBox { Location = new Point(0, 0), Size = new Size(NavW, 418), DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = Theme.Px(23),
+            var nav = new AccessibleListBox { Location = new Point(0, 0), Size = new Size(NavW, 384), DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = Theme.Px(23),
                                               IntegralHeight = false, BorderStyle = BorderStyle.None, AccessibleName = "Gallery lists" };
             nav.IsHeading = o => ((GallerySource)o).Kind == "header";
             nav.NameOf = o => ((GallerySource)o).Title.Replace("★  ", "");
@@ -1859,19 +2114,32 @@ namespace AuraBoxControl
             p.Controls.Add(account);
 
             // top: search (filters the list shown as you type; Enter searches all of Divoom's 16 x 16 art), English names
-            var search = new TextBox { Location = new Point(X, 3), Width = 240 };
+            var search = new TextBox { Location = new Point(X, 3), Width = 190 };
             search.HandleCreated += delegate { SendMessage(search.Handle, EM_SETCUEBANNER, (IntPtr)1, "Filter by name, or press Enter to search Divoom"); };
             p.Controls.Add(search);
-            var english = new CheckBox { Text = "English names", Location = new Point(X + 250, 5), AutoSize = true, Checked = cfg.TranslateNames };
+            var english = new CheckBox { Text = "English names", Location = new Point(X + 200, 5), AutoSize = true, Checked = cfg.TranslateNames };
             p.Controls.Add(english);
+            // only the animated designs (on at first): still pictures are left out of every list
+            var animatedOnly = new CheckBox { Text = "Animated only", Location = new Point(X + 312, 5), AutoSize = true, Checked = cfg.GalleryAnimatedOnly,
+                                              AccessibleName = "Show only animated designs" };
+            p.Controls.Add(animatedOnly);
             // every animated thumbnail plays (only the ones in view, each at its own speed); this pauses them all
             bool animateAll = cfg.GalleryAnimate;
-            var animBtn = Btn(animateAll ? "❚❚  Pause Animations" : "▶  Play Animations", W - 156, 0, 156, null);
+            var animBtn = Btn(animateAll ? "❚❚  Pause" : "▶  Play", W - 92, 0, 92, null);   // short, to leave room for the filters
             animBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             animBtn.AccessibleName = animateAll ? "Pause animations" : "Play animations";
             p.Controls.Add(animBtn);
             var title = new Label { Location = new Point(X, 36), Size = new Size(VW - 300, 22), Font = Theme.Semibold(10f), UseMnemonic = false, AutoEllipsis = true };
             p.Controls.Add(title);
+            // how many designs each page of an online list loads (10 to 150): more to scroll through, fewer to load
+            // faster; under the lists, above the account button
+            var perLabel = new Label { Location = new Point(0, 393), Size = new Size(78, 20), UseMnemonic = false };
+            var perPage = new TrackBar { Minimum = 1, Maximum = 15, SmallChange = 1, LargeChange = 3, Location = new Point(76, 388), Width = NavW - 76,
+                                         AutoSize = false, Height = Theme.Px(26), TickStyle = TickStyle.None, Value = Math.Max(1, Math.Min(15, cfg.GalleryPageSize / 10)),
+                                         AccessibleName = "Designs per page" };
+            perLabel.Text = perPage.Value * 10 + " per page";
+            perLabel.Anchor = perPage.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            p.Controls.Add(perLabel); p.Controls.Add(perPage);
             var prev = Btn("‹ Previous", W - 290, 31, 96, null); var next = Btn("Next ›", W - 96, 31, 96, null);
             var pageLabel = new Label { Location = new Point(W - 192, 36), Size = new Size(94, 20), TextAlign = ContentAlignment.TopCenter, UseMnemonic = false };
             prev.Anchor = next.Anchor = pageLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -1888,7 +2156,7 @@ namespace AuraBoxControl
             int thumb = Theme.Px(50);
             var images = new ImageList { ImageSize = new Size(thumb, thumb), ColorDepth = ColorDepth.Depth24Bit };
             var view = new ListView { Location = new Point(X, 64), Size = new Size(VW, 388), View = View.LargeIcon, LargeImageList = images,
-                                      MultiSelect = false, HideSelection = false, BorderStyle = BorderStyle.None };
+                                      MultiSelect = true, HideSelection = false, BorderStyle = BorderStyle.None };
             AccentIcons(view);
             view.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             p.Controls.Add(view);
@@ -1906,7 +2174,8 @@ namespace AuraBoxControl
             // box shows only the names containing the text
             var pageItems = new List<GalleryItem>();
             Func<GalleryItem, bool> matches = it =>
-                search.Text.Trim().Length == 0 || (it.Name ?? "").IndexOf(search.Text.Trim(), StringComparison.CurrentCultureIgnoreCase) >= 0;
+                (!animatedOnly.Checked || it.IsAnimation) &&
+                (search.Text.Trim().Length == 0 || (it.Name ?? "").IndexOf(search.Text.Trim(), StringComparison.CurrentCultureIgnoreCase) >= 0);
             Action<GalleryItem> display = delegate (GalleryItem it)
             {
                 images.Images.Add(Proto.Render(it.Frames[BestFrame(it)], Math.Max(1, thumb / 10)));
@@ -1954,17 +2223,39 @@ namespace AuraBoxControl
             {
                 foreach (GallerySource x in nav.Items) if (x.Kind == "mylist" && x.Query == n) { nav.SelectedItem = x; return; }
             };
-            // a copy of a design put in one of the user's lists (once per list)
-            Action<GalleryItem, string> addToList = delegate (GalleryItem it, string n)
+            // the selected designs (Ctrl- or Shift-click picks several), in the order shown
+            Func<List<GalleryItem>> picks = delegate
             {
-                string sig = Signature(it.Frames);
-                foreach (var x in myLists.In(n)) if (Signature(x.Frames) == sig) { status.Text = "“" + it.Name + "” is already in “" + n + "”"; return; }
-                var copy = new GalleryItem { Category = n, Name = it.Name, Ms = it.Ms };
-                foreach (var f in it.Frames) copy.Frames.Add((int[])f.Clone());
-                myLists.Items.Add(copy);
+                var o = new List<GalleryItem>();
+                foreach (int i in view.SelectedIndices) if (i < shown.Count) o.Add(shown[i]);
+                return o;
+            };
+            // the one design that Send, Edit and Play act on: the focused one when it is selected, else the first selected
+            Func<GalleryItem> one = delegate
+            {
+                if (view.SelectedIndices.Count == 0) return null;
+                var f = view.FocusedItem;
+                int i = f != null && f.Selected ? f.Index : view.SelectedIndices[0];
+                return i < shown.Count ? shown[i] : null;
+            };
+            Func<List<GalleryItem>, string> several = its => its.Count == 1 ? "“" + its[0].Name + "”" : its.Count + " designs";
+            // copies of designs put in one of the user's lists (each look once per list), saved in one go
+            Action<List<GalleryItem>, string> addToList = delegate (List<GalleryItem> its, string n)
+            {
+                var have = new HashSet<string>();
+                foreach (var x in myLists.In(n)) have.Add(Signature(x.Frames));
+                var added = new List<GalleryItem>();
+                foreach (var it in its)
+                {
+                    if (!have.Add(Signature(it.Frames))) continue;
+                    added.Add(it.CopyAs(n, it.Name));
+                }
+                int already = its.Count - added.Count;
+                if (added.Count == 0) { status.Text = (its.Count == 1 ? "“" + its[0].Name + "” is" : "All " + its.Count + " are") + " already in “" + n + "”"; return; }
+                myLists.Items.AddRange(added);
                 try { myLists.Save(); }
-                catch (Exception e) { myLists.Items.Remove(copy); status.Text = "Could not save the list: " + e.Message; return; }
-                status.Text = "Added “" + it.Name + "” to “" + n + "”";
+                catch (Exception e) { foreach (var c in added) myLists.Items.Remove(c); status.Text = "Could not save the list: " + e.Message; return; }
+                status.Text = "Added " + several(added) + " to “" + n + "”" + (already > 0 ? " (" + already + " already there)" : "");
             };
             favSort.SelectedIndexChanged += delegate
             {
@@ -1977,8 +2268,7 @@ namespace AuraBoxControl
             {
                 string sig = Signature(it.Frames);
                 foreach (var f in favorites) if (Signature(f.Frames) == sig) { status.Text = "“" + f.Name + "” is already a favorite"; return false; }
-                var copy = new GalleryItem { Category = "Favorites", Name = name, Ms = it.Ms };
-                foreach (var f in it.Frames) copy.Frames.Add((int[])f.Clone());
+                var copy = it.CopyAs("Favorites", name);
                 favorites.Add(copy);
                 try { GalleryItem.SaveFavorites(favorites); }
                 catch (Exception e) { favorites.Remove(copy); status.Text = "Could not save favorites: " + e.Message; return false; }
@@ -2001,33 +2291,71 @@ namespace AuraBoxControl
                 if (saveFavorite(small, it.Name + " (10×10)"))
                     status.Text += ": open Favorites 10×10 to edit it";
             };
+            // several designs saved to favorites in one go (each look once)
+            Action<List<GalleryItem>> addFavorites = delegate (List<GalleryItem> its)
+            {
+                if (its.Count == 1) { saveFavorite(its[0], its[0].Name); return; }
+                var have = new HashSet<string>();
+                foreach (var f in favorites) have.Add(Signature(f.Frames));
+                var added = new List<GalleryItem>();
+                foreach (var it in its)
+                {
+                    if (!have.Add(Signature(it.Frames))) continue;
+                    added.Add(it.CopyAs("Favorites", it.Name));
+                }
+                int already = its.Count - added.Count;
+                if (added.Count == 0) { status.Text = "All " + its.Count + " are already favorites"; return; }
+                favorites.AddRange(added);
+                try { GalleryItem.SaveFavorites(favorites); }
+                catch (Exception e) { foreach (var c in added) favorites.Remove(c); status.Text = "Could not save favorites: " + e.Message; return; }
+                status.Text = "Saved " + several(added) + " to Favorites (kept on this PC)" + (already > 0 ? "; " + already + " already there" : "");
+            };
+            // designs taken out of favorites (by how they look, so it works from any list)
+            Action<List<GalleryItem>> removeFavorites = delegate (List<GalleryItem> its)
+            {
+                var sigs = new HashSet<string>();
+                foreach (var it in its) sigs.Add(Signature(it.Frames));
+                var before = new List<GalleryItem>(favorites);
+                int gone = favorites.RemoveAll(f => sigs.Contains(Signature(f.Frames)));
+                if (gone == 0) { status.Text = (its.Count == 1 ? "“" + its[0].Name + "” is not a favorite" : "None of these are favorites"); return; }
+                try { GalleryItem.SaveFavorites(favorites); }
+                catch (Exception e) { favorites.Clear(); favorites.AddRange(before); status.Text = "Could not save favorites: " + e.Message; return; }
+                if (onFavorites()) load();
+                status.Text = "Removed " + (gone == 1 && its.Count == 1 ? "“" + its[0].Name + "”" : gone + " design" + (gone == 1 ? "" : "s")) + " from favorites";
+            };
             favBtn.Click += delegate
             {
-                if (view.SelectedIndices.Count == 0) { status.Text = "Pick a design first"; return; }
-                var it = shown[view.SelectedIndices[0]];
-                if (!onFavorites()) { saveFavorite(it, it.Name); return; }
-                favorites.Remove(it);
-                try { GalleryItem.SaveFavorites(favorites); }
-                catch (Exception e) { favorites.Add(it); status.Text = "Could not save favorites: " + e.Message; return; }
-                load(); status.Text = "Removed “" + it.Name + "” from favorites";
+                var its = picks();
+                if (its.Count == 0) { status.Text = "Pick a design first (Ctrl- or Shift-click picks several)"; return; }
+                if (onFavorites()) removeFavorites(its); else addFavorites(its);
             };
             p.Controls.Add(favBtn);
 
             // right-click a design: rename or remove it in Favorites, or add it to favorites from any other list
             var itemMenu = new ContextMenuStrip { ShowImageMargin = false, Renderer = new MenuRenderer() };
             Action<ListViewItem> rename = delegate (ListViewItem item) { view.LabelEdit = true; item.BeginEdit(); };
+            Point menuAt = Point.Empty;   // where the menu was asked for, in the list's coordinates
             itemMenu.Opening += delegate (object s, System.ComponentModel.CancelEventArgs e)
             {
                 itemMenu.Items.Clear();
-                var hit = view.HitTest(view.PointToClient(Cursor.Position)).Item;
+                var hit = view.HitTest(menuAt).Item;
                 if (hit == null) { e.Cancel = true; return; }
-                hit.Selected = true; hit.Focused = true;
+                // right-clicking one of several selected designs keeps them all; any other picks just that one
+                if (!hit.Selected) { view.SelectedItems.Clear(); hit.Selected = true; }
+                hit.Focused = true;
+                var picked = picks();
+                bool many = picked.Count > 1;
+                string them = many ? " (" + picked.Count + ")" : "";
                 itemMenu.Items.Add("Send to " + P.Name, null, delegate { gallerySend.PerformClick(); });
-                var picked = shown[hit.Index];
-                if (picked.Frames.Count > 0 && Proto.Side(picked.Frames[0]) == 16)
-                    itemMenu.Items.Add("Make 10×10 Copy (Favorites)", null, delegate { save10(picked); });
-                itemMenu.Items.Add("Rename", null, delegate { rename(hit); });
-                var addTo = new ToolStripMenuItem("Add to List");
+                var big = picked.FindAll(x => x.Frames.Count > 0 && Proto.Side(x.Frames[0]) == 16);
+                if (big.Count > 0)
+                    itemMenu.Items.Add("Make 10×10 Cop" + (big.Count > 1 ? "ies (" + big.Count + ")" : "y") + " (Favorites)", null, delegate
+                    {
+                        foreach (var x in big) save10(x);
+                        if (big.Count > 1) status.Text = "Made 10×10 copies of " + big.Count + " designs in Favorites 10×10";
+                    });
+                if (!many) itemMenu.Items.Add("Rename", null, delegate { rename(hit); });
+                var addTo = new ToolStripMenuItem("Add to List" + them);
                 foreach (var n in myLists.Names)
                 {
                     string ln = n;
@@ -2038,36 +2366,57 @@ namespace AuraBoxControl
                 itemMenu.Items.Add(addTo);
                 if (onList())
                 {
-                    itemMenu.Items.Add("Remove From This List", null, delegate
+                    itemMenu.Items.Add("Remove From This List" + them, null, delegate
                     {
-                        myLists.Items.Remove(picked);
+                        string ln = cur.Query;
+                        foreach (var x in picked) myLists.Items.Remove(x);
                         try { myLists.Save(); }
-                        catch (Exception ex) { myLists.Items.Add(picked); status.Text = "Could not save the list: " + ex.Message; return; }
-                        load(); status.Text = "Removed “" + picked.Name + "” from “" + cur.Query + "”";
+                        catch (Exception ex) { myLists.Items.AddRange(picked); status.Text = "Could not save the list: " + ex.Message; return; }
+                        load(); status.Text = "Removed " + several(picked) + " from “" + ln + "”";
                     });
                 }
                 if (onFavorites())
                 {
-                    itemMenu.Items.Add("Remove From Favorites", null, delegate { favBtn.PerformClick(); });
+                    itemMenu.Items.Add("Remove From Favorites" + them, null, delegate { removeFavorites(picked); });
                     return;
                 }
-                // any other list: offer Remove when this design is already a favorite
-                var it = shown[hit.Index];
-                string sig = Signature(it.Frames);
-                var match = favorites.Find(f => Signature(f.Frames) == sig);
-                if (match == null) itemMenu.Items.Add("Add to Favorites", null, delegate { favBtn.PerformClick(); });
-                else itemMenu.Items.Add("Remove From Favorites", null, delegate
-                {
-                    favorites.RemoveAll(f => Signature(f.Frames) == sig);
-                    try { GalleryItem.SaveFavorites(favorites); }
-                    catch (Exception ex) { favorites.Add(match); status.Text = "Could not save favorites: " + ex.Message; return; }
-                    status.Text = "Removed “" + match.Name + "” from favorites";
-                });
+                // any other list: Add for the ones not yet favorites, Remove for the ones that are
+                var favSigs = new HashSet<string>();
+                foreach (var f in favorites) favSigs.Add(Signature(f.Frames));
+                var notFav = picked.FindAll(x => !favSigs.Contains(Signature(x.Frames)));
+                var isFav = picked.FindAll(x => favSigs.Contains(Signature(x.Frames)));
+                if (notFav.Count > 0) itemMenu.Items.Add("Add to Favorites" + (many ? " (" + notFav.Count + ")" : ""), null, delegate { addFavorites(notFav); });
+                if (isFav.Count > 0) itemMenu.Items.Add("Remove From Favorites" + (many ? " (" + isFav.Count + ")" : ""), null, delegate { removeFavorites(isFav); });
             };
-            view.ContextMenuStrip = itemMenu;
+            // the menu opens toward the inside of the window: near the right edge (the right-most designs, with the window
+            // maximized) it and its Add to List menu open to the left, instead of spilling onto the next monitor
+            Action<Point> showMenu = delegate (Point at)
+            {
+                menuAt = at;
+                int right = view.RectangleToScreen(view.ClientRectangle).Right, x = view.PointToScreen(at).X;
+                bool left = x + Theme.Px(2 * 240) > right;
+                itemMenu.Show(view, at, left ? ToolStripDropDownDirection.BelowLeft : ToolStripDropDownDirection.BelowRight);
+                foreach (ToolStripItem i in itemMenu.Items)
+                {
+                    var sub = i as ToolStripMenuItem;
+                    if (sub != null && sub.HasDropDownItems) sub.DropDownDirection = left ? ToolStripDropDownDirection.Left : ToolStripDropDownDirection.Right;
+                }
+            };
+            view.MouseUp += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Right) showMenu(e.Location); };
             view.KeyDown += delegate (object s, KeyEventArgs e)   // F2 renames too, like in Explorer
             {
-                if (e.KeyCode == Keys.F2 && view.SelectedItems.Count > 0) rename(view.SelectedItems[0]);
+                if (e.KeyCode == Keys.Apps || (e.KeyCode == Keys.F10 && e.Shift))   // the menu key: the menu at the focused design
+                {
+                    e.SuppressKeyPress = true;
+                    var f = view.FocusedItem ?? (view.SelectedItems.Count > 0 ? view.SelectedItems[0] : null);
+                    if (f != null) { var r = view.GetItemRect(f.Index, ItemBoundsPortion.Icon); showMenu(new Point(r.Left + r.Width / 2, r.Top + r.Height / 2)); }
+                }
+                if (e.KeyCode == Keys.F2 && view.SelectedItems.Count == 1) rename(view.SelectedItems[0]);
+                if (e.KeyCode == Keys.A && e.Control)   // Ctrl+A picks every design shown
+                {
+                    e.SuppressKeyPress = true;
+                    view.BeginUpdate(); foreach (ListViewItem x in view.Items) x.Selected = true; view.EndUpdate();
+                }
             };
             view.AfterLabelEdit += delegate (object s, LabelEditEventArgs e)
             {
@@ -2168,7 +2517,7 @@ namespace AuraBoxControl
                         try { BeginInvoke((Action)delegate { counting.Remove(src.Key); if (n < 0) return; totals[src.Key] = n; if (cur == src) showPaging(); }); }
                         catch (InvalidOperationException) { }   // window closed meanwhile
                     });
-                string key = src.Key + "#" + page + (src.Mine ? "#" + DivoomAccount.UserId : "");
+                string key = src.Key + "#" + page + "x" + DivoomCloud.PageSize + (src.Mine ? "#" + DivoomAccount.UserId : "");
                 List<GalleryItem> cached;
                 if (pageCache.TryGetValue(key, out cached))
                 {
@@ -2246,6 +2595,12 @@ namespace AuraBoxControl
                             var it = new GalleryItem { Category = "Cloud", Name = name.Length > 0 ? name : "Untitled" };
                             if (translated && !savedName[i]) DesignCache.SetName(DesignCache.KeyOf(e.Id), name);   // the English name, not the original ("" = untitled)
                             if (e.Id.StartsWith(DivoomCloud16.Prefix)) it.Ms = DivoomCloud16.MsOf(e.Id.Substring(DivoomCloud16.Prefix.Length));
+                            if (e.Id.StartsWith(DivoomCloud16.Prefix128))
+                            {   // the file as Divoom made it goes along, for a Tiivoo 2 (and for saving)
+                                string fid = e.Id.Substring(DivoomCloud16.Prefix128.Length);
+                                it.Ms = DivoomCloud16.MsOf(fid);
+                                it.Raw = DivoomCloud16.File(DivoomCloud16.Prefix128, fid);
+                            }
                             foreach (var f in Distinct(fr)) it.Frames.Add(f);
                             it.Key = DesignCache.KeyOf(e.Id);
                             Renamed(it);
@@ -2257,6 +2612,7 @@ namespace AuraBoxControl
                         // only a fully loaded page counts toward "already seen", so a cancelled load never hides anything
                         if (!src.Mine) lock (seen) foreach (var sig in mine) if (!sig.StartsWith("name:")) seen.Add(sig);
                         string kind = src.Kind == "lametric" ? "8×8 icons, centered" : src.Kind == "classic" ? "11×11 art cropped to 10×10" :
+                                      src.Kind == "d128" ? "128×128 art" + (P.Box is Tiivoo2 ? "" : " (shrunk to fit this display)") :
                                       "16×16 art" + (P.Box.Size == 16 ? "" : " (squeezed to 10×10 on an AuraBox)");
                         string note = kept.Count + " designs" + (dupes > 0 ? ", " + dupes + " duplicates hidden" : "") + "  ·  " + kind;
                         BeginInvoke((Action)delegate { pageCache[key] = kept; pageNotes[key] = note; });
@@ -2350,54 +2706,95 @@ namespace AuraBoxControl
                 cfg.TranslateNames = english.Checked; SaveSettings();
                 pageCache.Clear(); load();
             };
+            animatedOnly.CheckedChanged += delegate
+            {   // shows the list again with or without the still pictures (nothing to download)
+                cfg.GalleryAnimatedOnly = animatedOnly.Checked; SaveSettings();
+                view.BeginUpdate();
+                view.Items.Clear(); images.Images.Clear(); shown.Clear();
+                foreach (var it in pageItems) if (matches(it)) display(it);
+                view.EndUpdate();
+                status.Text = animatedOnly.Checked ? shown.Count + " of " + pageItems.Count + " designs here are animated (still pictures hidden)"
+                                                   : "Showing still pictures too (" + pageItems.Count + " designs)";
+            };
+            // the page size applies once the slider rests (dragging past 60 doesn't load 70, 80 and 90 on the way); the
+            // page shown then is the one holding the first design that was on screen
+            var perWait = new System.Windows.Forms.Timer { Interval = 500 };
+            perPage.ValueChanged += delegate { perLabel.Text = perPage.Value * 10 + " per page"; perWait.Stop(); perWait.Start(); };
+            perWait.Tick += delegate
+            {
+                perWait.Stop();
+                int old = DivoomCloud.PageSize, size = perPage.Value * 10;
+                if (size == old) return;
+                DivoomCloud.PageSize = size; cfg.GalleryPageSize = size; SaveSettings();
+                if (cur == null || !cur.Cloud) return;
+                cloudPage = cloudPage * old / size;
+                load();
+            };
             prev.Click += delegate { if (cloudPage > 0) { cloudPage--; load(); } };
             next.Click += delegate { cloudPage++; load(); };
             accountChanged += delegate { if (cur != null && (cur.Kind == "likes" || cur.Kind == "uploads")) { pageCache.Clear(); load(); } };
 
-            // animate the thumbnails: every animated one in view (at its own speed: a Divoom design's time per frame, else
-            // a quarter second), or with animations paused just the selected one
-            var frameAt = new Dictionary<GalleryItem, int>();
-            var dueAt = new Dictionary<GalleryItem, DateTime>();
-            preview.Interval = 60;
+            // animate the thumbnails: every animated one in view, or with animations paused just the selected one. Calm
+            // on purpose (many Divoom designs blink 11 to 20 times a second): each frame stays up at least a tenth of a
+            // second, the frames keep a steady beat from a clock (not the timer's uneven ticks), and a 16 x 16 design
+            // fades through a half-and-half picture into its next frame instead of snapping. The list draws off-screen
+            // first, so redrawing a thumbnail doesn't flicker. Only the app's thumbnails: displays get designs as made.
+            typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).SetValue(view, true, null);
+            var frameAt = new Dictionary<GalleryItem, int>();      // what each thumbnail shows: frame * 2, + 1 while fading
+            var startAt = new Dictionary<GalleryItem, double>();   // when it started playing (clock ms)
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            const double FadeFrom = 0.6;   // the last 40% of each frame's time is the fade
+            preview.Interval = 25;
             preview.Tick += delegate
             {
                 if (!p.Visible || shown.Count == 0 || view.Items.Count != shown.Count) return;
-                var now = DateTime.Now;
+                double now = clock.Elapsed.TotalMilliseconds;
                 var area = view.ClientRectangle;
                 int sel = view.SelectedIndices.Count > 0 ? view.SelectedIndices[0] : -1;
                 for (int i = 0; i < shown.Count; i++)
                 {
                     var it = shown[i];
-                    if (it.Frames.Count < 2 || (!animateAll && i != sel)) continue;
-                    DateTime due;
-                    if (dueAt.TryGetValue(it, out due) && now < due) continue;
+                    int n = it.Frames.Count;
+                    if (n < 2 || (!animateAll && i != sel)) continue;
                     var r = view.GetItemRect(i, ItemBoundsPortion.Icon);
                     if (!r.IntersectsWith(area)) continue;   // scrolled out of view
-                    int f; frameAt.TryGetValue(it, out f);
-                    f = (f + 1) % it.Frames.Count;
-                    frameAt[it] = f;
-                    dueAt[it] = now.AddMilliseconds(Math.Max(80, it.Ms > 0 ? it.Ms : 250));
-                    images.Images[i] = Proto.Render(it.Frames[f], Math.Max(1, thumb / 10));   // the list holds on to the picture: not disposed here
+                    double began;
+                    if (!startAt.TryGetValue(it, out began)) startAt[it] = began = now;
+                    double beat = (now - began) / Math.Max(100, it.Ms > 0 ? it.Ms : 250);
+                    int f = (int)beat % n;
+                    bool fading = it.Frames[f].Length == 256 && beat - Math.Floor(beat) >= FadeFrom;   // RGB designs only
+                    int at = f * 2 + (fading ? 1 : 0), was;
+                    if (frameAt.TryGetValue(it, out was) && was == at) continue;   // already showing it
+                    frameAt[it] = at;
+                    var px = fading ? Mix(it.Frames[f], it.Frames[(f + 1) % n]) : it.Frames[f];
+                    images.Images[i] = Proto.Render(px, Math.Max(1, thumb / 10));   // the list holds on to the picture: not disposed here
                     view.Invalidate(r);
                 }
             };
             animBtn.Click += delegate
             {
                 animateAll = !animateAll; cfg.GalleryAnimate = animateAll; SaveSettings();
-                animBtn.Text = animateAll ? "❚❚  Pause Animations" : "▶  Play Animations";
+                animBtn.Text = animateAll ? "❚❚  Pause" : "▶  Play";
                 animBtn.AccessibleName = animateAll ? "Pause animations" : "Play animations";
                 if (!animateAll)   // back to each design's first frame, except the selected one
                     for (int i = 0; i < shown.Count; i++)
-                        if (shown[i].Frames.Count > 1 && !view.Items[i].Selected) { images.Images[i] = Proto.Render(shown[i].Frames[BestFrame(shown[i])], Math.Max(1, thumb / 10)); frameAt.Remove(shown[i]); }
+                        if (shown[i].Frames.Count > 1 && !view.Items[i].Selected) { images.Images[i] = Proto.Render(shown[i].Frames[BestFrame(shown[i])], Math.Max(1, thumb / 10)); frameAt.Remove(shown[i]); startAt.Remove(shown[i]); }
                 view.Invalidate();
             };
             preview.Start();
 
             Action send = delegate
             {
-                if (view.SelectedIndices.Count == 0) { status.Text = "Pick a design first"; return; }
-                var it = shown[view.SelectedIndices[0]];
+                var it = one();
+                if (it == null) { status.Text = "Pick a design first"; return; }
                 StopRotationForManual();
+                var t2 = box as Tiivoo2;
+                if (t2 != null && it.Raw != null)   // a 128 x 128 design to a Tiivoo 2: its own file, every frame
+                {
+                    var raw = it.Raw; var look = Proto.ToRgb16(it.Frames[0]);
+                    Run(delegate { t2.ShowDivoom128(raw, look); }, "Sent “" + it.Name + "” (128×128, " + it.Frames.Count + " frame" + (it.Frames.Count == 1 ? "" : "s") + ")");
+                    return;
+                }
                 var tv = box as Tivoo;
                 if (it.IsAnimation && tv != null)   // the Tivoo plays long animations by itself, at the design's own speed
                 {
@@ -2416,8 +2813,8 @@ namespace AuraBoxControl
             Button editBtn;
             p.Controls.Add(editBtn = Btn("Edit", 186, 462, 90, delegate
             {
-                if (view.SelectedIndices.Count == 0) return;
-                var it = shown[view.SelectedIndices[0]];
+                var it = one();
+                if (it == null) return;
                 grid.SetAll(Proto.To10(it.Frames[0]));   // drawing is 10 x 10: 16 x 16 designs are squeezed
                 if (it.IsAnimation) { frames.Clear(); foreach (var f in Sample(it.Frames)) frames.Add(Proto.To10(f)); RefreshFrames(); }
                 status.Text = "Loaded “" + it.Name + "” into Draw & Animate" + (it.IsAnimation ? " (picture and frames)" : "");
@@ -2428,8 +2825,8 @@ namespace AuraBoxControl
             playAll.Click += delegate
             {
                 if (job != null && playingBtn == playAll) { TogglePlay(playAll, null, "Animation"); return; }
-                if (view.SelectedIndices.Count == 0) { status.Text = "Pick an animation first"; return; }
-                var it = shown[view.SelectedIndices[0]];
+                var it = one();
+                if (it == null) { status.Text = "Pick an animation first"; return; }
                 if (!it.IsAnimation) { status.Text = "“" + it.Name + "” is a still picture"; return; }
                 var all = new List<int[]>(it.Frames);
                 int n = 0;
@@ -2437,11 +2834,11 @@ namespace AuraBoxControl
                            "“" + it.Name + "” (" + all.Count + " frames)");
             };
             p.Controls.Add(playAll);
-            var tip = Note("Double-click sends to the display (AuraBox: 12 frames, Tivoo: 60). Right-click: rename, favorites, lists.", 2, 499);
+            var tip = Note("Double-click sends to the display (AuraBox: 12 frames, Tivoo: 60). Right-click: rename, favorites, lists. Ctrl- or Shift-click picks several.", 2, 499);
             tip.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             p.Controls.Add(tip);
             // start where the art fits the display: Divoom 16 x 16 on a Tivoo, the built-in designs on an AuraBox
-            Func<GallerySource> start = () => sources.Find(s => P.Box.Size == 16 ? s.Kind == "d16" : s.Kind == "builtin") ?? sources.Find(s => s.Kind == "fav" && s.Arg == P.Box.Size);
+            Func<GallerySource> start = () => sources.Find(s => P.Box is Tiivoo2 ? s.Kind == "d128" : P.Box.Size == 16 ? s.Kind == "d16" : s.Kind == "builtin") ?? sources.Find(s => s.Kind == "fav" && s.Arg == P.Box.Size);
             p.VisibleChanged += delegate { if (p.Visible && cur == null) nav.SelectedItem = start(); };   // first opened
             return p;
         }
@@ -2737,6 +3134,18 @@ namespace AuraBoxControl
             return list;
         }
 
+        // two 16 x 16 RGB pictures mixed half and half (the Gallery's thumbnails fade through it between frames)
+        static int[] Mix(int[] a, int[] b)
+        {
+            var m = new int[a.Length];
+            for (int j = 0; j < a.Length; j++)
+            {
+                int p = a[j], q = b[j];
+                m[j] = ((p >> 16 & 255) + (q >> 16 & 255) + 1) / 2 << 16 | ((p >> 8 & 255) + (q >> 8 & 255) + 1) / 2 << 8 | ((p & 255) + (q & 255) + 1) / 2;
+            }
+            return m;
+        }
+
         Button gallerySend;
 
         // ---------- live animations: generated on this PC frame by frame, each with its own speed ----------
@@ -2823,7 +3232,7 @@ namespace AuraBoxControl
             livePlay.Click += delegate
             {
                 var la = LiveAnims[pick.SelectedIndex];
-                TogglePlay(livePlay, delegate { StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), DateTime.MaxValue); }, la.Name);
+                TogglePlay(livePlay, delegate { PlayLiveAnim(la, DateTime.MaxValue); }, la.Name);
             };
 
             // preview the picked animation at its speed while this page is open
@@ -2835,7 +3244,7 @@ namespace AuraBoxControl
                 if (DateTime.Now < nextFrame || pick.SelectedIndex < 0) return;
                 if (sim == null) sim = MakeFor(LiveAnims[pick.SelectedIndex], sel.Box.Size);
                 preview.SetAll(sim());
-                nextFrame = DateTime.Now.AddSeconds(SizePace(sel.Box.Size) * Uneven(LiveFrameSeconds(LiveAnims[pick.SelectedIndex].Id, speed.Value)));
+                nextFrame = DateTime.Now.AddSeconds(SizePace(sel.Box.Size) * Uneven(LiveAnims[pick.SelectedIndex].Id, LiveFrameSeconds(LiveAnims[pick.SelectedIndex].Id, speed.Value)));
             };
             previewTimer.Start();
             deviceChanged += delegate { sim = null; };   // another display: preview its version
@@ -2845,7 +3254,7 @@ namespace AuraBoxControl
         }
 
         // frame time for a live animation, read on every frame so a speed change applies right away
-        Func<double> LiveInterval(string id) { double k = SizePace(box.Size); return () => k * Uneven(LiveFrameSeconds(id, cfg.SpeedOf(id))); }
+        Func<double> LiveInterval(string id) { double k = SizePace(box.Size); return () => k * Uneven(id, LiveFrameSeconds(id, cfg.SpeedOf(id))); }
 
         // frame time for a display: things move a pixel a frame, and the Tivoo has 16 pixels across to the AuraBox's 10,
         // so its frames come 10/16 as far apart to cross the screen in the same time
@@ -2861,6 +3270,9 @@ namespace AuraBoxControl
         // the same on average), so motion has the uneven, lively pace of a hospital scope trace
         static readonly Random frameRng = new Random();
         static double Uneven(double seconds) { lock (frameRng) return seconds * (0.5 + frameRng.NextDouble()); }
+
+        // the aquarium, the Mandelbrot zoom and the holiday countdown's scrolling words keep a steady pace, so they glide instead of lurching
+        static double Uneven(string id, double seconds) { return id == "aquarium" || id == "jellyfish" || id == "mandelbrot" || id == "nextholiday" ? seconds : Uneven(seconds); }
 
         void SendAnimation(List<int[]> list)
         {
@@ -2886,6 +3298,160 @@ namespace AuraBoxControl
         }
 
         // frames generated on this PC and sent one at a time (snakes)
+        // a live animation on the current display until a time: frame by frame, or on a Tiivoo 2 as whole loops it plays
+        // by itself (Loop128) when the animation has them
+        void PlayLiveAnim(LiveAnim la, DateTime until)
+        {
+            var t2 = box as Tiivoo2;
+            if (t2 != null && la.Make128 != null)
+            {
+                // the aquarium bubbles: the Tiivoo 2's own "Mountain Stream" sound, low, for as long as it plays. The
+                // order when switching: stop the sound, stop the animation, start the new one, then start its sound,
+                // so the bubbling starts once the aquarium is on screen
+                bool bubbling = la.Id == "aquarium" || la.Id == "aquaclock";
+                var quiet = new int[8]; quiet[5] = 15;
+                Action shown = bubbling ? (Action)delegate { JobSend(delegate { t2.WhiteNoise(quiet, 0, true); }); } : null;
+                try
+                {
+                    if (la.Id == "aquaclock") AquariumClock(t2, until, shown);
+                    else LoopPlay(t2, la.Make128(), until, shown);
+                }
+                finally
+                {   // sent even when the playlist is stopping (JobSend skips sending then)
+                    if (bubbling && t2.Connected) try { t2.WhiteNoise(quiet, 0, false); } catch (Exception) { }
+                }
+            }
+            else StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), until);
+        }
+
+        // the aquarium as a Tiivoo 2 clock face of our own (Tiivoo2.ShowLocalClock): one loop, sent once, with the time
+        // centered along the bottom over the gravel (AquariumClockItems). Its sound starts once the picture is across
+        // (about a minute and a half; at once when the Tiivoo 2 still has it)
+        public const int AquariumClockId = 9900001;
+        // The time as four digit pictures (kinds 59-62: hour tens, hour ones, minute tens, minute ones, as the store's Flip
+        // Clock has them), drawn here in Divoom font 366 (#40 on the sample sheet, 9 x 12, the user's pick): white with
+        // its outline (red in the font file) grey. The hour's tens has a blank "0", so 1:47 shows as "1:47", not "01:47"
+        // (the hour item, kind 3, always writes two digits), and each "1" sits in the middle of its place. The colon
+        // (outlined the same) is part of the picture.
+        public static string[] AquariumClockItems(string tens, string digits)
+        {
+            Func<int, int, string, string> item = (x, kind, file) => x + ",112,9,12," + kind + ",4,1,2,FFFFFF,FF0000,0," + file;
+            return new[] { item(60, 59, tens), item(69, 60, digits), item(83, 61, digits), item(92, 62, digits) };
+        }
+
+        // the digit pictures by name: [0] the hour's tens (blank 0), [1] all ten; names change with the pictures (the
+        // device keeps files by name). Made once from the font and kept in settings\cache
+        public static Dictionary<string, byte[]> AquariumClockDigits(out string tens, out string digits)
+        {
+            string dir = Settings.DataFile("cache");
+            string pt = System.IO.Path.Combine(dir, "aquarium_clock_digits_366_tens.bin"), pa = System.IO.Path.Combine(dir, "aquarium_clock_digits_366.bin");
+            byte[] ft = null, fa = null;
+            try { if (System.IO.File.Exists(pt) && System.IO.File.Exists(pa)) { ft = System.IO.File.ReadAllBytes(pt); fa = System.IO.File.ReadAllBytes(pa); } } catch (Exception) { }
+            if (ft == null || fa == null)
+            {
+                string info = ClockStore.Post("Device/GetSomeFontInfo", "\"FontIds\":[{\"id\":366}]");
+                var m = System.Text.RegularExpressions.Regex.Match(info, "\"366,\\d+,(\\d+),(\\d+),([^,\"]+),([^\"]*)\"");
+                if (!m.Success) throw new Exception("Divoom didn't describe font 366");
+                int gw = int.Parse(m.Groups[1].Value), gh = int.Parse(m.Groups[2].Value); string chars = m.Groups[4].Value;
+                int fw, fms; var glyphs = DivoomFiles.Decode(ClockStore.File(m.Groups[3].Value), out fw, out fms);
+                if (glyphs == null) throw new Exception("Font 366's picture couldn't be read");
+                var all = new List<int[]>();
+                for (int dgt = 0; dgt <= 9; dgt++)
+                {
+                    var g = glyphs[chars.IndexOf((char)('0' + dgt))]; int l = gw, r = -1;
+                    for (int y = 0; y < gh; y++) for (int x = 0; x < gw; x++) if ((g[y * fw + x] & 0xFFFFFF) != 0) { l = Math.Min(l, x); r = Math.Max(r, x); }
+                    int shift = r < 0 ? 0 : (gw - (r - l + 1)) / 2 - l;   // its ink in the middle of its place
+                    var px = new int[64 * 64];
+                    for (int y = 0; y < gh; y++)
+                        for (int x = 0; x < gw; x++)
+                        {
+                            int c = g[y * fw + x] & 0xFFFFFF, tx = x + shift; if (c == 0 || tx < 0 || tx >= 64) continue;
+                            px[y * 64 + tx] = c == 0xFF0000 ? 0x707070 : c;   // the outline grey
+                        }
+                    all.Add(px);
+                }
+                var tensFrames = new List<int[]>(all); tensFrames[0] = new int[64 * 64];
+                ft = DivoomFiles.File64(tensFrames, 100); fa = DivoomFiles.File64(all, 100);
+                try { System.IO.Directory.CreateDirectory(dir); System.IO.File.WriteAllBytes(pt, ft); System.IO.File.WriteAllBytes(pa, fa); } catch (Exception) { }
+            }
+            Func<byte[], string> hash = b => { uint h = 2166136261; foreach (var x in b) h = (h ^ x) * 16777619; return h.ToString("x8"); };
+            tens = "vvdigits/t/" + hash(ft); digits = "vvdigits/a/" + hash(fa);
+            return new Dictionary<string, byte[]> { { tens, ft }, { digits, fa } };
+        }
+        // what the picture's own part of the clock looks like; a change here makes a new picture (else the saved one is reused)
+        const string AquariumClockLook = "colon-366-grey_plants-ragged";   // (the digits are pictures of their own, AquariumClockDigits)
+        public static List<int[]> AquariumClockFrames(out int ms)
+        {
+            double play;
+            var frames = new Aquarium128().Next(out ms, out play);
+            const int W2 = Tiivoo2.Wide;
+            foreach (var f in frames)
+                foreach (int top in new[] { 115, 119 })   // the colon: two white 2 x 2 dots, each in a grey 1-pixel outline
+                {
+                    for (int y = top - 1; y <= top + 2; y++) for (int x = 78; x <= 81; x++) f[y * W2 + x] = 0x707070;
+                    for (int y = top; y <= top + 1; y++) for (int x = 79; x <= 80; x++) f[y * W2 + x] = 0xFFFFFF;
+                }
+            return frames;
+        }
+
+        // the picture, made once and kept (settings\cache): every restart sends the same one, which the Tiivoo 2 already
+        // has, so a restart mid-way never leaves it asking for a picture that no longer exists
+        static byte[] AquariumClockFile()
+        {
+            string path = System.IO.Path.Combine(Settings.DataFile("cache"), "aquarium_clock_" + AquariumClockLook + ".bin");
+            try { if (System.IO.File.Exists(path)) return System.IO.File.ReadAllBytes(path); } catch (Exception) { }
+            int ms; var file = Tiivoo2.LocalClockFile(AquariumClockFrames(out ms), ms);
+            try { System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)); System.IO.File.WriteAllBytes(path, file); } catch (Exception) { }
+            return file;
+        }
+
+        void AquariumClock(Tiivoo2 t2, DateTime until, Action shown)
+        {
+            var file = AquariumClockFile();
+            string tens, digits; var pictures = AquariumClockDigits(out tens, out digits);
+            var items = AquariumClockItems(tens, digits);
+            if (!JobSend(delegate { t2.ShowLocalClock(AquariumClockId, "Aquarium Clock", file, items, pictures); })) return;
+            SetStatus("Aquarium Clock: sending the aquarium to the Tiivoo 2 (about a minute and a half)...");
+            var started = DateTime.Now;
+            while (!jobStop && Before(until) && !t2.LocalFaceSent && (t2.LocalFaceAsked || (DateTime.Now - started).TotalSeconds < 20) && (DateTime.Now - started).TotalSeconds < 300)
+                Wait(0.5);
+            if (jobStop || !Before(until)) return;
+            SetStatus("Aquarium Clock on the Tiivoo 2");
+            if (shown != null) shown();
+            while (!jobStop && Before(until)) Wait(0.5);
+        }
+
+        // send a loop, leave it playing (the next one is made meanwhile), then the next; an animation whose loop only
+        // changes with a setting (the heart rate) is made again when that changes
+        // shown: run once the first loop is on screen (its sound starts after the picture)
+        void LoopPlay(Tiivoo2 t2, Loop128 loop, DateTime until, Action shown = null)
+        {
+            try { LoopPlaying(t2, loop, until, shown); }
+            finally { LoopSound.Stop(); }
+        }
+
+        void LoopPlaying(Tiivoo2 t2, Loop128 loop, DateTime until, Action shown)
+        {
+            int ms = 0; double play = 0;
+            var frames = loop.Next(out ms, out play);
+            var sound = loop.Sound();
+            while (!jobStop && Before(until))
+            {
+                var fr = frames; int m = ms; double hold = play;
+                if (!JobSend(delegate { t2.ShowLoop(fr, m, loop.Photo); })) { SetStatus("Waiting for Tiivoo 2 connection..."); Wait(5); continue; }
+                LoopSound.Play(sound);   // its soundtrack starts with it (none: stops the last one)
+                if (shown != null) { shown(); shown = null; }
+                List<int[]> nextFrames = null; int nextMs = 0; double nextPlay = 0;
+                Thread maker = null;
+                if (hold > 0) { maker = new Thread(delegate () { nextFrames = loop.Next(out nextMs, out nextPlay); }) { IsBackground = true }; maker.Start(); }
+                var started = DateTime.Now;
+                while (!jobStop && Before(until) && (hold > 0 ? (DateTime.Now - started).TotalSeconds < hold : !loop.Stale)) Wait(0.25);
+                if (maker != null) { maker.Join(); frames = nextFrames; ms = nextMs; play = nextPlay; }
+                else frames = loop.Next(out ms, out play);
+                sound = loop.Sound();
+            }
+        }
+
         void StreamLoop(Func<int[]> next, Func<double> interval, DateTime until)
         {
             while (!jobStop && Before(until))
@@ -3008,6 +3574,228 @@ namespace AuraBoxControl
                     Wait(Math.Max(0, (0.45 - speed * 0.035) * SizePace(box.Size) - (DateTime.Now - started).TotalSeconds));
                 }
             }
+        }
+
+        // ---------- all displays: seen together as they stand, and animations that run across all of them ----------
+        class WallAnimInfo { public string Id, Name, About; public Func<WallAnim> Make; }
+        static readonly WallAnimInfo[] WallAnims = {
+            new WallAnimInfo { Id = "wall_balls", Name = "Bouncing Balls", Make = () => new WallBalls(),
+                               About = "Shiny balls fly from display to display, bouncing off the outer edges and off each other." },
+            new WallAnimInfo { Id = "wall_comet", Name = "Comet", Make = () => new WallComet(),
+                               About = "A comet loops through all the displays on a long winding path, its glowing tail fading behind it." },
+            new WallAnimInfo { Id = "wall_worm", Name = "Worm", Make = () => new WallWorm(),
+                               About = "A striped worm slithers from display to display, turning gently and bouncing off the outer edges." },
+            new WallAnimInfo { Id = "wall_lavaclock", Name = "Lava Clock", Make = () => new WallLavaClock(H24),
+                               About = "One lava lamp flowing across all the displays. Every minute the time bubbles up out of the lava, hours on the first display and minutes on the next, then melts and drips away." },
+            new WallAnimInfo { Id = "wall_jellyfish", Name = "Jellyfish", Make = () => new WallJellyfish(),
+                               About = "Glowing jellyfish pulse and drift from display to display through a dark tank, tentacles trailing behind each push." },
+            new WallAnimInfo { Id = "wall_eyes", Name = "Creepy Eyes", Make = () => new WallEyes(),
+                               About = "Bloodshot eyeballs in different colors, all slowly looking around together, until a few of them glitch and stare the other way." },
+            new WallAnimInfo { Id = "wall_rainbow", Name = "Rainbow Sweep", Make = () => new WallRainbow(),
+                               About = "Rainbow bands sweep across all the displays as one picture, slowly turning. Handy for lining up the layout." },
+        };
+        const string WallTag = "All Displays: ";   // what a display's job shows while it is part of one
+
+        Thread wallThread; volatile bool wallStop; volatile WallAnimInfo wallPlaying;
+        readonly List<Player> wallResume = new List<Player>();   // displays whose playlists paused for it, resumed on Stop
+        readonly Dictionary<Player, int[]> wallFrames = new Dictionary<Player, int[]>();
+
+        // the paired displays and their screens as they stand (all: also the ones left out of the animations across all
+        // displays). Only 16 x 16 and bigger take part: the AuraBox's 10 x 10 and 8 colors don't fit in. A display new
+        // to the layout goes to the right of the others.
+        List<KeyValuePair<Player, WallScreen>> WallLayout(bool all = false)
+        {
+            var o = new List<KeyValuePair<Player, WallScreen>>();
+            var list = new List<Player>(players).FindAll(pl => pl.Box.Size >= 16);
+            lock (cfg.Layout)
+            {
+                double nextX = 0; double[] v;
+                foreach (var pl in list) if (pl.Cfg.Mac.Length > 0 && cfg.Layout.TryGetValue(pl.Cfg.Mac, out v)) nextX = Math.Max(nextX, v[0] + v[2] + 20);
+                foreach (var pl in list)
+                {
+                    if (pl.Cfg.Mac.Length == 0) continue;
+                    if (!cfg.Layout.TryGetValue(pl.Cfg.Mac, out v)) { v = new[] { nextX, 0, 70.0 }; cfg.Layout[pl.Cfg.Mac] = v; nextX += v[2] + 20; }
+                    if (!all && WallLeftOut(pl)) continue;
+                    o.Add(new KeyValuePair<Player, WallScreen>(pl, new WallScreen { X = v[0], Y = v[1], Size = v[2], N = pl.Box.Size }));
+                }
+            }
+            return o;
+        }
+
+        List<WallTile> WallTiles()
+        {
+            var o = new List<WallTile>();
+            foreach (var kv in WallLayout(true))
+            {
+                var pl = kv.Key; int[] img = null;
+                if (wallPlaying != null && pl.Showing != null && pl.Showing.StartsWith(WallTag)) lock (wallFrames) wallFrames.TryGetValue(pl, out img);
+                lock (cfg.Layout)
+                    o.Add(new WallTile { Name = pl.Name, Place = cfg.Layout[pl.Cfg.Mac], Image = img ?? pl.Box.LastImage, Mode = pl.Box.LastMode, Connected = pl.Box.Connected,
+                                         Out = WallLeftOut(pl), Key = pl });
+            }
+            return o;
+        }
+
+        bool WallLeftOut(Player pl) { lock (cfg.WallOut) return cfg.WallOut.Contains(pl.Cfg.Mac); }
+
+        // a display joins the animation playing across all displays: its playlist pauses and its job sends its part
+        void WallJoin(Player pl, WallAnimInfo info)
+        {
+            As(pl, delegate
+            {
+                if (playlistOn) { PausePlaylist(); if (!wallResume.Contains(P)) wallResume.Add(P); }
+                StartJob(WallSendLoop);
+                showing = WallTag + info.Name;
+            });
+        }
+
+        // a display leaves it (left out while it plays): back to its own playlist if it was playing one
+        void WallLeave(Player pl)
+        {
+            As(pl, delegate
+            {
+                if (showing != null && showing.StartsWith(WallTag)) StopJob();
+                if (wallResume.Remove(P) && !playlistOn && dcfg.Rotate) SetPlaylist(true);
+            });
+        }
+
+        // the box by a display's name: in or out of the animations across all displays, at once if one is playing
+        void WallToggle(WallTile tile)
+        {
+            var pl = tile.Key as Player;
+            if (pl == null || pl.Cfg.Mac.Length == 0) return;
+            bool leave;
+            lock (cfg.WallOut) { leave = !cfg.WallOut.Contains(pl.Cfg.Mac); if (leave) cfg.WallOut.Add(pl.Cfg.Mac); else cfg.WallOut.Remove(pl.Cfg.Mac); }
+            SaveSettings();
+            var info = wallPlaying;
+            if (leave)
+            {
+                if (info != null) WallLeave(pl);
+                status.Text = pl.Name + " left out of All Displays" + (info != null ? ": back to its own playlist" : "; it keeps to its own playlist");
+            }
+            else
+            {
+                if (info != null) WallJoin(pl, info);
+                status.Text = pl.Name + " is back in All Displays";
+            }
+        }
+
+        static double WallPace(int speed) { return Math.Pow(1.25, speed - 5); }   // speed 5 = as designed
+
+        // start an animation across every display: each one's playlist pauses and its job sends its part of the picture
+        void PlayWall(WallAnimInfo info)
+        {
+            StopWall();
+            var anim = info.Make();
+            lock (wallFrames) wallFrames.Clear();
+            wallStop = false; wallPlaying = info;
+            foreach (var kv in WallLayout()) WallJoin(kv.Key, info);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            wallThread = new Thread(delegate ()
+            {
+                double last = 0;
+                while (!wallStop)
+                {
+                    double now = stopwatch.Elapsed.TotalSeconds, dt = Math.Min(0.2, now - last); last = now;
+                    var layout = WallLayout();
+                    // every display went on to something else: nothing left to draw for
+                    if (!layout.Exists(kv => kv.Key.Showing != null && kv.Key.Showing.StartsWith(WallTag))) break;
+                    anim.SetArea(layout.ConvertAll(kv => kv.Value));
+                    anim.Step(dt * WallPace(cfg.SpeedOf(info.Id)));
+                    foreach (var kv in layout) { var f = anim.Render(kv.Value); lock (wallFrames) wallFrames[kv.Key] = f; }
+                    Thread.Sleep(40);
+                }
+                if (!wallStop) wallPlaying = null;
+            }) { IsBackground = true };
+            wallThread.Start();
+            status.Text = info.Name + " playing on all displays";
+        }
+
+        void StopWall()
+        {
+            if (wallThread == null) return;
+            wallStop = true;
+            foreach (var pl in players) As(pl, delegate { if (showing != null && showing.StartsWith(WallTag)) StopJob(); });
+            wallThread.Join(1000);
+            wallThread = null; wallPlaying = null;
+        }
+
+        // a display's job while an animation runs across all of them: send its newest part as fast as its link allows,
+        // so a slower display skips frames instead of falling behind the others
+        void WallSendLoop()
+        {
+            var pl = P; int[] last = null;
+            while (!jobStop && !wallStop)
+            {
+                int[] f;
+                lock (wallFrames) wallFrames.TryGetValue(pl, out f);
+                if (f == null || f == last) { Thread.Sleep(10); continue; }
+                last = f;
+                if (!JobSend(delegate { box.ShowImage(f); })) { SetStatus("Waiting for " + pl.Name + " connection..."); Wait(5); }
+            }
+        }
+
+        Panel BuildWallPage()
+        {
+            var p = NewPage();
+            var lay = NewCard("Your Displays, As They Stand", 0, 0, W, 300);
+            var view = new WallView { Location = new Point(12, 36), Size = new Size(W - 24, 232), Tiles = WallTiles };
+            view.Moved += delegate { SaveSettings(); };
+            view.Toggled += WallToggle;
+            lay.Controls.Add(view);
+            lay.Controls.Add(Note("Drag each 16×16 display to where it stands and its corner to its screen's width (mm). Untick one to leave it out.", 12, 274));
+            p.Controls.Add(lay);
+
+            var run = NewCard("Across All Displays", 0, 310, W, 210);
+            var pick = new ListBox { Location = new Point(12, 40), Size = new Size(190, 156), IntegralHeight = false };
+            AccentList(pick);
+            foreach (var w in WallAnims) pick.Items.Add(w.Name);
+            run.Controls.Add(pick);
+            var title = new Label { Location = new Point(218, 38), Size = new Size(W - 230, 26), Font = Theme.Semibold(12f), UseMnemonic = false };
+            var about = new Label { Location = new Point(218, 68), Size = new Size(W - 230, 44) };
+            var play = Btn("Play", 218, 116, 120, null, true);
+            run.Controls.Add(new Label { Text = "Speed:", Location = new Point(218, 166), AutoSize = true });
+            var speed = new TrackBar { Minimum = 1, Maximum = 10, Location = new Point(270, 158), Width = 300, TickStyle = TickStyle.None };
+            run.Controls.Add(title); run.Controls.Add(about); run.Controls.Add(play); run.Controls.Add(speed);
+            p.Controls.Add(run);
+
+            bool picking = false;
+            pick.SelectedIndexChanged += delegate
+            {
+                if (pick.SelectedIndex < 0) return;
+                var w = WallAnims[pick.SelectedIndex];
+                title.Text = w.Name; about.Text = w.About;
+                picking = true; speed.Value = cfg.SpeedOf(w.Id); picking = false;
+                if (wallPlaying != null && wallPlaying != w) PlayWall(w);   // playing: switch to it
+            };
+            speed.ValueChanged += delegate
+            {
+                if (picking || pick.SelectedIndex < 0) return;
+                cfg.SetSpeed(WallAnims[pick.SelectedIndex].Id, speed.Value); SaveSettings();
+            };
+            play.Click += delegate
+            {
+                if (wallPlaying != null)
+                {
+                    StopWall();
+                    foreach (var pl in wallResume) As(pl, delegate { if (!playlistOn && dcfg.Rotate) SetPlaylist(true); });   // back to their playlists
+                    status.Text = wallResume.Count > 0 ? "Stopped on all displays; playlists resumed" : "Stopped on all displays";
+                    wallResume.Clear();
+                }
+                else if (WallLayout().Count == 0) status.Text = "No display to play on: tick one under its picture (16×16 displays only)";
+                else if (pick.SelectedIndex >= 0) PlayWall(WallAnims[pick.SelectedIndex]);
+            };
+            pick.SelectedIndex = 0;
+
+            var refresh = new System.Windows.Forms.Timer { Interval = 80 };
+            refresh.Tick += delegate
+            {
+                if (!p.Visible) return;
+                view.Invalidate();
+                play.Text = wallPlaying != null ? "Stop" : "Play";
+            };
+            refresh.Start();
+            return p;
         }
 
         // ---------- clock & weather ----------
@@ -3279,6 +4067,40 @@ namespace AuraBoxControl
         }
 
         // one weather period: icon and temperature alternate until the end time
+        // the weather on a 128 x 128 screen: the 16 x 16 animated icon five times the size, the temperature large, and the
+        // conditions under it; one frame for each frame of the icon
+        static List<int[]> Weather128(WeatherInfo w)
+        {
+            var frames = new List<int[]>();
+            string temp = Math.Round(w.Temp) + "°" + w.Unit, what = w.Description;
+            foreach (var icon in WeatherArt16.IconFrames(w))
+            {
+                var rgb = Palette16.ToRgb(icon);
+                using (var bmp = new Bitmap(128, 128, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.Clear(Color.Black);
+                        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                        for (int k = 0; k < 256; k++)
+                            if (rgb[k] != 0)
+                                using (var b = new SolidBrush(Color.FromArgb(rgb[k] >> 16 & 255, rgb[k] >> 8 & 255, rgb[k] & 255)))
+                                    g.FillRectangle(b, 24 + (k % 16) * 5, 2 + (k / 16) * 5, 5, 5);
+                        var center = new StringFormat { Alignment = StringAlignment.Center };
+                        using (var big = new Font("Segoe UI Semibold", 22f, GraphicsUnit.Pixel))
+                            g.DrawString(temp, big, Brushes.White, new RectangleF(0, 80, 128, 30), center);
+                        using (var small = new Font("Segoe UI", 12f, GraphicsUnit.Pixel))
+                        using (var gray = new SolidBrush(Color.FromArgb(190, 210, 230)))
+                            g.DrawString(what, small, gray, new RectangleF(0, 108, 128, 18), center);
+                    }
+                    var px = new int[128 * 128];
+                    for (int y = 0; y < 128; y++) for (int x = 0; x < 128; x++) px[y * 128 + x] = bmp.GetPixel(x, y).ToArgb() & 0xFFFFFF;
+                    frames.Add(px);
+                }
+            }
+            return frames;
+        }
+
         void WeatherPeriod(DateTime end)
         {
             var w = GetWeather(false);
@@ -3286,6 +4108,14 @@ namespace AuraBoxControl
             var tv = box as Tivoo;
             if (tv != null) JobSend(delegate { SendWeatherTo(tv, w); });   // keeps the Tivoo's own clock and weather screen current
             SetStatus("Weather — " + Math.Round(w.Temp) + "°" + w.Unit + ", " + w.Description);
+            var t2w = box as Tiivoo2;
+            if (t2w != null)
+            {   // the Tiivoo 2: a full-screen card it plays by itself: the sky as it is, and tomorrow's on its back
+                var card = WeatherScene.Make(w, cfg.Place);
+                JobSend(delegate { t2w.ShowLoop(card, WeatherScene.FrameMs, true); });
+                WaitUntil(end);
+                return;
+            }
             // a 16 x 16 display gets the 16 x 16 pictures (palette indexes until sent, then RGB)
             bool big = box.Size == 16;
             Func<int[], int[]> ready = px => big ? Palette16.ToRgb(px) : px;
@@ -3593,7 +4423,7 @@ namespace AuraBoxControl
             currentItem = it.Id; currentEnd = end;
             jobStatus = "Playlist: " + it.Name + " until " + end.ToString("t");
             if (it.Id != "weather") SetStatus(jobStatus);
-            foreach (var la in LiveAnims) if (la.Id == it.Id) { StreamLoop(MakeFor(la, box.Size), LiveInterval(la.Id), end); return; }
+            foreach (var la in LiveAnims) if (la.Id == it.Id) { PlayLiveAnim(la, end); return; }
             switch (it.Id)
             {
                 case "weather": WeatherPeriod(end); return;
@@ -3632,7 +4462,9 @@ namespace AuraBoxControl
                 jobStatus = "Playlist: " + pick.Name + " (" + from + ") until " + end.ToString("t");
                 SetStatus(jobStatus);
                 var tv = box as Tivoo;
-                if (pick.Frames.Count > 1 && tv != null)
+                var t2 = box as Tiivoo2;
+                if (pick.Raw != null && t2 != null) { var raw = pick.Raw; var look = Proto.ToRgb16(pick.Frames[0]); show = delegate { t2.ShowDivoom128(raw, look); }; }
+                else if (pick.Frames.Count > 1 && tv != null)
                 {
                     var fr = Sample(pick.Frames, Tivoo.MaxFrames); int ms = pick.Ms > 0 ? pick.Ms : 200;
                     show = delegate { tv.ShowAnimationMs(fr, ms); };

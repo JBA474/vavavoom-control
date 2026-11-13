@@ -14,11 +14,12 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("VaVaVoom Control")]
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
 
 namespace AuraBoxControl
 {
@@ -74,15 +75,31 @@ namespace AuraBoxControl
             return px;
         }
 
-        // a picture's side: 10 (palette indexes) or 16 (RGB colors)
-        public static int Side(int[] px) { return px.Length == 256 ? 16 : 10; }
+        // a picture's side: 10 (palette indexes), 16 or 128 (RGB colors)
+        public static int Side(int[] px) { return px.Length == 256 ? 16 : px.Length == 16384 ? 128 : 10; }
 
         public static Color ColorAt(int[] px, int k)
         {
-            return px.Length == 256 ? Color.FromArgb(px[k] >> 16 & 0xFF, px[k] >> 8 & 0xFF, px[k] & 0xFF) : Palette[px[k] & 7];
+            return px.Length != 100 ? Color.FromArgb(px[k] >> 16 & 0xFF, px[k] >> 8 & 0xFF, px[k] & 0xFF) : Palette[px[k] & 7];
         }
 
-        // cell: pixel size for a 10 x 10 picture; a 16 x 16 one is drawn the same overall size
+        // a 128 x 128 picture made 16 x 16: each pixel the average of the 8 x 8 it covers
+        public static int[] Shrink128(int[] px)
+        {
+            var o = new int[256];
+            for (int y = 0; y < 16; y++)
+                for (int x = 0; x < 16; x++)
+                {
+                    int r = 0, g = 0, b = 0;
+                    for (int yy = 0; yy < 8; yy++)
+                        for (int xx = 0; xx < 8; xx++) { int c = px[(y * 8 + yy) * 128 + x * 8 + xx]; r += c >> 16 & 255; g += c >> 8 & 255; b += c & 255; }
+                    o[y * 16 + x] = (r / 64) << 16 | (g / 64) << 8 | b / 64;
+                }
+            return o;
+        }
+
+        // cell: pixel size for a 10 x 10 picture; a 16 x 16 one is drawn the same overall size. AuraBox pictures
+        // (10 x 10) get its LED look: each pixel lit in the middle and darker toward its edges.
         public static Bitmap Render(int[] px, int cell)
         {
             int n = Side(px), size = 10 * cell, c = Math.Max(1, size / n);
@@ -90,21 +107,53 @@ namespace AuraBoxControl
             using (var g = Graphics.FromImage(bmp))
             {
                 g.Clear(Color.FromArgb(20, 20, 20));
+                if (n > size)
+                {   // bigger than the picture (128 x 128): each pixel of it shows the nearest one
+                    for (int y = 0; y < size; y++)
+                        for (int x = 0; x < size; x++)
+                        {
+                            var col = ColorAt(px, (y * n / size) * n + x * n / size);
+                            bmp.SetPixel(x, y, col.R + col.G + col.B == 0 ? Color.FromArgb(40, 40, 40) : col);
+                        }
+                    return bmp;
+                }
                 int gap = c > 3 ? 1 : 0, off = (size - c * n) / 2;
                 for (int k = 0; k < n * n; k++)
                 {
                     var col = ColorAt(px, k);
-                    using (var b = new SolidBrush(col.R + col.G + col.B == 0 ? Color.FromArgb(40, 40, 40) : col))
-                        g.FillRectangle(b, off + (k % n) * c, off + (k / n) * c, c - gap, c - gap);
+                    var r = new Rectangle(off + (k % n) * c, off + (k / n) * c, c - gap, c - gap);
+                    if (n == 10 && col.R + col.G + col.B > 0) { Led(g, r, col); continue; }
+                    using (var b = new SolidBrush(col.R + col.G + col.B == 0 ? Color.FromArgb(40, 40, 40) : col)) g.FillRectangle(b, r);
                 }
             }
             return bmp;
+        }
+
+        // one AuraBox LED: its color full in the middle, fading to a third toward the edges and darkest in the corners
+        // (the box's diffuser lights each pixel from a point behind its center)
+        public static void Led(Graphics g, Rectangle r, Color c)
+        {
+            if (r.Width < 4 || r.Height < 4) { using (var b = new SolidBrush(c)) g.FillRectangle(b, r); return; }
+            using (var path = new GraphicsPath())
+            {
+                float gx = r.Width * 0.2f, gy = r.Height * 0.2f;
+                path.AddEllipse(r.X - gx, r.Y - gy, r.Width + 2 * gx, r.Height + 2 * gy);
+                using (var b = new PathGradientBrush(path))
+                {
+                    b.CenterPoint = new PointF(r.X + r.Width / 2f, r.Y + r.Height / 2f);
+                    b.CenterColor = Color.FromArgb(c.R + (255 - c.R) / 6, c.G + (255 - c.G) / 6, c.B + (255 - c.B) / 6);   // a touch hotter at the core
+                    b.SurroundColors = new[] { Color.FromArgb(c.R / 4, c.G / 4, c.B / 4) };
+                    b.FocusScales = new PointF(0.3f, 0.3f);   // a small bright core before the falloff
+                    g.FillRectangle(b, r);
+                }
+            }
         }
 
         // a 10 x 10 picture stretched to 16 x 16 (some rows and columns doubled) as RGB; a 16 x 16 one as it is
         public static int[] ToRgb16(int[] px)
         {
             if (px.Length == 256) return px;
+            if (px.Length == 16384) return Shrink128(px);
             var o = new int[256];
             for (int y = 0; y < 16; y++)
                 for (int x = 0; x < 16; x++) o[y * 16 + x] = Palette[px[(y * 10 / 16) * 10 + x * 10 / 16] & 7].ToArgb() & 0xFFFFFF;
@@ -117,6 +166,7 @@ namespace AuraBoxControl
         // outlines survive (sampling a single pixel loses them).
         public static int[] To10(int[] px)
         {
+            if (px.Length == 16384) px = Shrink128(px);
             if (px.Length != 256) return px;
             var o = new int[100];
             // a muted gray filling much of the picture is its background: off, not bright white (the box only has
@@ -204,26 +254,44 @@ namespace AuraBoxControl
         public bool Connected { get { return sock != null; } }
         public abstract string Kind { get; }   // "aurabox" or "tivoo" (saved in the settings)
         public abstract int Size { get; }      // pixels across
+        public double BrightnessScale = 1;     // full brightness on the slider gives this share of the device's own full (Ditoo Pro)
 
         // a device for a paired Bluetooth name or a saved kind
         public static Device Create(string nameOrKind)
         {
-            return KindOf(nameOrKind) == "tivoo" ? (Device)new Tivoo() : new AuraBox();
+            string kind = KindOf(nameOrKind);
+            return kind == "tiivoo2" ? new Tiivoo2() : kind == "tivoo" ? (Device)new Tivoo() : new AuraBox();
         }
 
         public static string KindOf(string nameOrKind)
         {
             string n = (nameOrKind ?? "").ToLowerInvariant();
+            if (n.Contains("tiivoo")) return "tiivoo2";   // the Tiivoo 2 pairs as "Divoom Tiivoo 2-Audio"
             foreach (string k in new[] { "tivoo", "timebox evo", "timebox-evo", "pixoo", "ditoo" }) if (n.Contains(k)) return "tivoo";
             return "aurabox";
         }
 
+        // a Divoom display by its Bluetooth name (the device list leaves out phones, headphones and the like)
+        public static bool IsDisplay(string name)
+        {
+            string n = (name ?? "").ToLowerInvariant();
+            return KindOf(n) == "tivoo" || n.Contains("aurabox") || n.Contains("timebox") || n.Contains("divoom");
+        }
+
         // channel 0 = let Windows look up the serial-port service (SDP)
+        // the serial channels to try, in order (null: the Windows lookup, then 1 to 6)
+        protected virtual int[] Channels { get { return null; } }
+
         public int Connect(ulong addr, int preferred)
         {
-            var tries = new List<int> { 0 };
-            if (preferred > 0) tries.Add(preferred);
-            for (int c = 1; c <= 6; c++) if (!tries.Contains(c)) tries.Add(c);
+            var tries = new List<int>();
+            if (Channels != null) tries.AddRange(Channels);
+            else
+            {
+                tries.Add(0);
+                if (preferred > 0) tries.Add(preferred);
+                for (int c = 1; c <= 6; c++) if (!tries.Contains(c)) tries.Add(c);
+            }
             Exception last = null;
             foreach (int ch in tries)
             {
@@ -234,6 +302,7 @@ namespace AuraBoxControl
                     s.SendTimeout = 3000;
                     sock = s;
                     StartDrain(s);
+                    try { OnConnected(); } catch (Exception) { }
                     return ch;
                 }
                 catch (Exception e) { last = e; s.Close(); }
@@ -241,16 +310,32 @@ namespace AuraBoxControl
             throw new IOException("Could not open the serial channel: " + (last == null ? "" : last.Message));
         }
 
-        // the device greets and acknowledges every command; read and discard so its replies never back up
-        static void StartDrain(Socket s)
+        // the device greets and acknowledges every command; read them so its replies never back up (a device that
+        // answers back looks at them in Received)
+        void StartDrain(Socket s)
         {
             var t = new Thread(delegate ()
             {
-                var buf = new byte[256];
-                try { while (s.Receive(buf) > 0) { } }
+                var buf = new byte[1024];
+                try { int n; while ((n = s.Receive(buf)) > 0) Received(buf, n); }
                 catch (Exception) { }
             }) { IsBackground = true };
             t.Start();
+        }
+
+        protected virtual void Received(byte[] buf, int n) { }
+
+        // just connected, its reader running: a device that wants to be asked something first does it here
+        protected virtual void OnConnected() { }
+
+        // a framed command sent as it is, without the rest after it (for many pieces in a row)
+        protected void SendRaw(byte[] frame)
+        {
+            lock (gate)
+            {
+                if (sock == null) throw new IOException("Not connected");
+                sock.Send(frame);
+            }
         }
 
         public void Close()
@@ -398,7 +483,7 @@ namespace AuraBoxControl
         void Send(byte cmd, byte[] data) { SendFrame(Frame(cmd, data), 666); }
 
         public override void SetTime() { Send(0x18, TimeData()); }
-        public override void SetBrightness(int v) { Send(0x74, new[] { (byte)Math.Round(Math.Max(0, Math.Min(255, v)) * 100 / 255.0) }); }
+        public override void SetBrightness(int v) { Send(0x74, new[] { (byte)Math.Round(Math.Max(0, Math.Min(255, v)) * 100 / 255.0 * BrightnessScale) }); }
         public override void SetTempUnit(bool fahrenheit) { Send(0x2B, new[] { (byte)(fahrenheit ? 1 : 0) }); }
         public override void Notify(int code) { Send(0x50, new[] { (byte)(code >= 8 ? code + 1 : code) }); }   // as the Divoom app numbers them
 
@@ -475,7 +560,7 @@ namespace AuraBoxControl
         }
 
         public void ShowEffect(int n) { Send(0x45, new byte[] { 3, (byte)n }); Remember(null, "Effect " + (n + 1), () => ShowEffect(n)); }
-        public void ShowVisualizer(int n) { Send(0x45, new byte[] { 4, (byte)n }); Remember(null, "Visualizer " + (n + 1), () => ShowVisualizer(n)); }
+        public virtual void ShowVisualizer(int n) { Send(0x45, new byte[] { 4, (byte)n }); Remember(null, "Visualizer " + (n + 1), () => ShowVisualizer(n)); }
 
         // tools: 0 stopwatch, 1 scoreboard, 2 noise meter, 3 countdown
         public void ShowScoreboard(int red, int blue)
@@ -485,7 +570,11 @@ namespace AuraBoxControl
             Remember(null, "Scoreboard " + red + " : " + blue, () => ShowScoreboard(red, blue));
         }
         public void ShowStopwatch() { Send(0x72, new byte[] { 0, 1 }); Remember(null, "Stopwatch", ShowStopwatch); }
+        // the Divoom app's stopwatch buttons: 0 pause, 1 start, 2 reset
+        public void StopwatchControl(int status) { Send(0x72, new byte[] { 0, (byte)status }); }
         public void ShowNoiseMeter() { Send(0x72, new byte[] { 2, 1 }); Remember(null, "Noise Meter", ShowNoiseMeter); }
+        public void NoiseMeterOff() { Send(0x72, new byte[] { 2, 2 }); }
+        public void StopCountdown() { Send(0x72, new byte[] { 3, 0, 0, 0 }); }
         public void ShowCountdown(int minutes, int seconds)
         {
             Send(0x72, new byte[] { 3, 1, (byte)Math.Min(99, minutes), (byte)Math.Min(59, seconds) });
@@ -530,7 +619,7 @@ namespace AuraBoxControl
             var d = new List<byte> { 0, 10, 10, 4 };
             d.AddRange(Picture(Proto.ToRgb16(px), 0));
             Send(0x44, d.ToArray());
-            var shown = (int[])px.Clone();
+            var shown = (int[])Proto.ToRgb16(px).Clone();
             Remember(shown, null, () => ShowImage(shown));
         }
 
@@ -539,7 +628,7 @@ namespace AuraBoxControl
         // an endless loop the Tivoo plays by itself (delay in tenths of a second): all frames, sent in 200-byte packets
         public override void ShowAnimation(List<int[]> frames, int delay) { ShowAnimationMs(frames, Math.Max(20, delay * 100)); }
 
-        public void ShowAnimationMs(List<int[]> frames, int ms)
+        public virtual void ShowAnimationMs(List<int[]> frames, int ms)
         {
             if (frames.Count == 0) return;
             if (frames.Count > MaxFrames) frames = frames.GetRange(0, MaxFrames);
@@ -554,7 +643,7 @@ namespace AuraBoxControl
                 Send(0x49, d.ToArray());
             }
             var copy = new List<int[]>(frames);
-            Remember((int[])frames[0].Clone(), null, () => ShowAnimationMs(copy, delay));
+            Remember((int[])Proto.ToRgb16(frames[0]).Clone(), null, () => ShowAnimationMs(copy, delay));
         }
 
         // one picture: AA, size, time (ms), 00 (new palette), color count, the colors, then each pixel's color number
@@ -562,25 +651,21 @@ namespace AuraBoxControl
         // color boost for everything the app draws or sends (0 off, 1 vivid, 2 extra vivid; set from Settings). LEDs give
         // light in proportion to the value, so mid-tones and pastels look pale next to a monitor: saturation is pushed
         // up (each channel moved away from the brightest one) and a gamma curve deepens the in-between values.
-        public static volatile int Vivid = 2;
-        static readonly double[] Saturation = { 1, 1.3, 1.6 }, Gamma = { 1, 1.6, 2.1 };
-        static int[] curve; static int curveFor = -1;
+        // The curve works on each channel next to the pixel's brightest one, so colors get richer without the whole
+        // picture going dark; brightness itself gets only a gentle curve (a full 2.1 gamma on every channel crushed
+        // navy, dim gray and dark shading to near black on the real Tivoo; changed 2026-11-11).
+        public static volatile int Vivid = 1;
+        static readonly double[] Saturation = { 1, 1.3, 1.6 }, Gamma = { 1, 1.6, 2.1 }, Darken = { 1, 1.1, 1.25 };
 
         public static int Boost(int c)
         {
             int v = Vivid;
             if (v <= 0 || v > 2) return c;
-            var lut = curve;
-            if (curveFor != v || lut == null)
-            {
-                lut = new int[256];
-                for (int i = 0; i < 256; i++) lut[i] = (int)Math.Round(255 * Math.Pow(i / 255.0, Gamma[v]));
-                curve = lut; curveFor = v;
-            }
             int r = c >> 16 & 0xFF, g = c >> 8 & 0xFF, b = c & 0xFF, m = Math.Max(r, Math.Max(g, b));
-            double k = Saturation[v];
-            r = Math.Max(0, (int)Math.Round(m - (m - r) * k)); g = Math.Max(0, (int)Math.Round(m - (m - g) * k)); b = Math.Max(0, (int)Math.Round(m - (m - b) * k));
-            return lut[r] << 16 | lut[g] << 8 | lut[b];
+            if (m == 0) return 0;
+            double k = Saturation[v], top = 255 * Math.Pow(m / 255.0, Darken[v]);
+            Func<int, int> ch = x => (int)Math.Round(top * Math.Pow(Math.Max(0, m - (m - x) * k) / m, Gamma[v]));
+            return ch(r) << 16 | ch(g) << 8 | ch(b);
         }
 
         public static byte[] Picture(int[] rgb, int ms)
@@ -608,6 +693,571 @@ namespace AuraBoxControl
             var o = new List<byte> { 0xAA, (byte)(size & 0xFF), (byte)(size >> 8), (byte)(ms & 0xFF), (byte)(ms >> 8), 0, (byte)(colors.Count & 0xFF) };
             foreach (int c in colors) { o.Add((byte)(c >> 16)); o.Add((byte)(c >> 8)); o.Add((byte)c); }
             o.AddRange(pixels);
+            return o.ToArray();
+        }
+    }
+
+    // The Tiivoo 2 ("Divoom Tiivoo 2-Audio"): a 128 x 128 color LCD on newer firmware, with its own way of taking
+    // pictures (worked out from the Divoom app 3.8.50, which calls it TivooLcd, and tried on the device 2026-11-12).
+    // A picture or animation goes up as one upload (command 0x8B): the app announces it (00, total length), the
+    // device asks for it (8B 55 00), then it goes in 256-byte pieces (01, total length, piece number, the bytes); the
+    // device may ask again for a piece (8B 55 01 <n>) and says when it has it all (BD 55 13). Inside:
+    //   16 x 16: 25 <frames> <ms BE16> 01 01 <length BE32> <zstd frame of the RGB pixels>; the device scales it up
+    //   128 x 128: 23 <frames> <ms BE16> 08 08, then per frame 01 <length BE32> <JPEG>
+    // The Tivoo's own commands (its clock, light and so on) do nothing here, so everything the app shows a Tivoo
+    // comes as pictures. An LCD shows colors as they are: no color boost.
+    class Tiivoo2 : Tivoo
+    {
+        public override string Kind { get { return "tiivoo2"; } }
+        protected override int[] Channels { get { return new[] { 1 }; } }   // it also offers 10, which takes nothing
+
+        public const int Pixels = 128;
+        public const int Wide = 160;   // its screen is 160 x 128: a 128 x 128 picture shows with bars at the sides
+        readonly object upload = new object();
+        readonly ManualResetEvent asked = new ManualResetEvent(false), received = new ManualResetEvent(false);
+        volatile byte[][] pieces;
+        readonly List<byte> inbox = new List<byte>();
+
+        // brightness: the Tivoo's own command (0x74, 0-100). Not 0x32, which the community notes give: that is the app's
+        // "adjust level", and each one steps the brightness round (50, 100, 0...) whatever level it is given.
+
+        public override void Notify(int code) { }   // no notification icons of its own
+
+        // its own sound and screens (tried on the device 2026-11-12). JSON commands go as command 01 with the JSON text.
+        void Json(string json) { SendFrame(Frame(1, Encoding.UTF8.GetBytes(json)), int.MaxValue); }
+
+        // white noise: 8 sounds it mixes, each with its own volume (0-100), for some minutes (0 = until stopped)
+        public static readonly string[] NoiseSounds = { "Fan", "Night Crickets", "Campfire", "Ocean Waves", "Rainstorm", "Mountain Stream", "Birds", "Singing Bowl" };
+        public void WhiteNoise(int[] volumes, int minutes, bool on)
+        {
+            var v = new string[8];
+            for (int i = 0; i < 8; i++) v[i] = (volumes != null && i < volumes.Length ? Math.Max(0, Math.Min(100, volumes[i])) : 0).ToString();
+            Json("{\"Command\":\"WhiteNoise/Set\",\"OnOff\":" + (on ? 1 : 0) + ",\"Time\":" + Math.Max(0, minutes) + ",\"EndStatus\":0,\"Volume\":[" + string.Join(",", v) + "]}");
+            if (on) Remember(null, "White Noise", null);
+        }
+
+        // FM radio: its radio mode (work mode 1), then the frequency in tenths of a MHz (low two digits, then the rest);
+        // back to Bluetooth audio is work mode 0
+        public void FmTune(double mhz)
+        {
+            int f = (int)Math.Round(Math.Max(87.5, Math.Min(108.0, mhz)) * 10);
+            SendFrame(Frame(0x05, new byte[] { 1 }), int.MaxValue);
+            SendFrame(Frame(0x61, new[] { (byte)(f % 100), (byte)(f / 100) }), int.MaxValue);
+            Remember(null, "FM " + (f / 10.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture), () => FmTune(mhz));
+        }
+        public void BluetoothAudio() { SendFrame(Frame(0x05, new byte[] { 0 }), int.MaxValue); }
+
+        // its own screens: song lyrics (for what plays through it) and its photo album
+        public void ShowLyrics() { Json("{\"Command\":\"Lyric/Enter\"}"); Remember(null, "Lyrics", ShowLyrics); }
+        public void ShowPhotos() { Json("{\"Command\":\"Photo/Enter\"}"); Remember(null, "Photos", ShowPhotos); }
+
+        // the lyrics screen's look: background 0-15 and how each line arrives (LyricEffects)
+        public static readonly string[] LyricEffects = { "Mixing", "Fade Out", "Fly Up", "Fly Out to the Left", "Rotation", "No Effect" };
+        public void ShowLyrics(int background, int effect)
+        {
+            Json("{\"Command\":\"Lyric/SetConfig\",\"Background\":" + Math.Max(0, Math.Min(15, background)) + ",\"TextEffect\":" + Math.Max(0, Math.Min(5, effect)) + "}");
+            ShowLyrics();
+        }
+
+        // a Pomodoro timer (the app's "Tomato Clock"), minutes each; rounds: 0 work only, 1-4 rounds of work and a short
+        // rest, a long rest after the last. It holds the screen until it ends or is stopped on the device (tried
+        // 2026-11-12: neither the app nor the PC can end it early)
+        public void Pomodoro(int work, int shortRest, int longRest, int rounds, bool sound)
+        {
+            Json("{\"Command\":\"Tomato/Set\",\"TomatoId\":1,\"TomatoName\":\"Focus\",\"TomatoExplain\":\"\",\"WorkTime\":" + Math.Max(1, work) +
+                 ",\"ShortRestTime\":" + Math.Max(1, shortRest) + ",\"LongRestTime\":" + Math.Max(1, longRest) + ",\"TimeCyclerType\":" + Math.Max(0, Math.Min(4, rounds)) +
+                 ",\"ImageFileId\":\"\",\"SoundOnOff\":" + (sound ? 1 : 0) + ",\"SoundType\":0,\"SoundSystem\":0,\"SoundVoiceFileId\":\"\",\"SoundVolume\":50,\"FinishFlag\":0,\"TargetDate\":0,\"EstimateTime\":0}");
+            Thread.Sleep(300);
+            Json("{\"Command\":\"Tomato/Start\",\"TomatoId\":1}");
+            Remember(null, "Pomodoro " + work + " min", null);
+        }
+
+        // its music visualizers (numbered from 0) and its SD card music (work mode 3)
+        public override void ShowVisualizer(int n) { Json("{\"Command\":\"Channel/SetEqPosition\",\"EqPosition\":" + Math.Max(0, n) + "}"); Remember(null, "Visualizer " + (n + 1), () => ShowVisualizer(n)); }
+        public void SdCardMusic() { SendFrame(Frame(0x05, new byte[] { 3 }), int.MaxValue); Remember(null, "SD Card Music", null); }
+
+        // a clock face from Divoom's clock store, by its number (ClockStore). The device keeps only the number: it then
+        // asks for the face, and Received fetches each part from Divoom the way the phone app does
+        public void ShowClockFace(int id, string name)
+        {
+            // reset first: it then asks for the face's layout again, which names its pictures afresh (FileTag), so a
+            // picture it kept broken from before is fetched again
+            Json("{\"Command\":\"Channel/ResetClock\",\"ClockId\":" + id + "}");
+            Thread.Sleep(300);
+            ClockChannel();
+            Json("{\"Command\":\"Channel/SetClockSelectId\",\"ClockId\":" + id + "}");
+            Remember(null, "Clock: " + name, () => ShowClockFace(id, name));
+        }
+
+        // a clock face of our own, kept on this PC and never uploaded: the device asks for its layout (BD 2A) and its
+        // background (BD 28/29/30 with the name in DeviceImageUrl) just as for a store face, and Received answers from
+        // here. The background is Divoom's full-screen format 1F: 1F <frames> <ms BE16> 08 0A, then each frame as
+        // <length BE32> <JPEG 160 x 128>. items: the layout's entries, "x,y,w,h,kind,3,1,font,color,color2,0,"
+        // (kind 4: the time as HH:MM in the font)
+        class LocalFace { public string Json; public byte[] Name, File; public Dictionary<string, byte[]> Extra; }
+        static readonly Dictionary<int, LocalFace> localFaces = new Dictionary<int, LocalFace>();
+        public volatile bool LocalFaceAsked, LocalFaceSent;
+        public void ShowLocalClock(int id, string title, List<int[]> frames, int ms, string[] items) { ShowLocalClock(id, title, LocalClockFile(frames, ms), items); }
+
+        // a face background in format 1F, under the device's 580 KB
+        public static byte[] LocalClockFile(List<int[]> frames, int ms)
+        {
+            List<byte> blob;
+            for (long q = 82; ; q -= 8)
+            {
+                blob = new List<byte> { 0x1F, (byte)Math.Min(255, frames.Count) };
+                blob.AddRange(BE(Math.Max(20, Math.Min(0xFFFF, ms)), 2));
+                blob.Add(Pixels / 16); blob.Add(Wide / 16);
+                for (int fi = 0; fi < frames.Count && fi < 255; fi++)
+                {
+                    var jpg = Jpeg(frames[fi], Wide, Pixels, q);
+                    blob.AddRange(BE(jpg.Length, 4)); blob.AddRange(jpg);
+                }
+                if (blob.Count <= 580000 || q <= 50) return blob.ToArray();
+            }
+        }
+
+        // extra: more pictures the items name (digit pictures for kinds 59-62), by name; each name must change with its
+        // picture, as the device keeps files by name (and only about 51 characters of it)
+        public void ShowLocalClock(int id, string title, byte[] file, string[] items, Dictionary<string, byte[]> extra = null)
+        {
+            uint h = 2166136261; foreach (var b in file) h = (h ^ b) * 16777619;   // a new picture gets a new name: the device keeps files it has
+            string name = "vavavoom/" + id + "/" + h.ToString("x8");
+            // and a new face number: it keeps each face's layout too, by number (id .. id + 49999)
+            foreach (var it in items) foreach (var ch in it) h = (h ^ ch) * 16777619;
+            if (extra != null) foreach (var k in extra.Keys) foreach (var ch in k) h = (h ^ ch) * 16777619;
+            id += (int)(h % 50000);
+            var quoted = new List<string>(); foreach (var it in items) quoted.Add("\"" + it + "\"");
+            long stamp = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
+            string json = "{\"ReturnCode\":0,\"ReturnMessage\":\"\",\"ClockId\":" + id + ",\"Hardware\":600,\"ItemList\":[" + string.Join(",", quoted.ToArray()) +
+                          "],\"UpdateTime\":" + stamp + ",\"ItemList2\":[],\"AppList\":[],\"AppNum\":0,\"DeviceImageUrl\":\"" + name +
+                          "\",\"LcdIndex\":0,\"DeviceEffect\":0,\"DeviceType\":5,\"PixelDialType\":0,\"ClockType\":2,\"NameCn\":\"\",\"NameEn\":\"" + title +
+                          "\",\"ReviewImageUrl\":\"\",\"IsAppCommand\":0,\"LcdIndependence\":0,\"EffectClockId\":824,\"DeviceId\":" + ClockStore.DeviceId +
+                          ",\"Command\":\"Device/GetClockInfo\"}";
+            lock (localFaces) localFaces[id] = new LocalFace { Json = json, Name = Encoding.UTF8.GetBytes(name), File = file, Extra = extra ?? new Dictionary<string, byte[]>() };
+            LocalFaceAsked = LocalFaceSent = false;
+            ClockChannel();
+            Json("{\"Command\":\"Channel/SetClockSelectId\",\"ClockId\":" + id + "}");
+            Remember(null, "Clock: " + title, () => { ClockChannel(); Json("{\"Command\":\"Channel/SetClockSelectId\",\"ClockId\":" + id + "}"); });
+        }
+
+        // its clock channel (Channel/SetIndex 0), from another screen such as a tool; picking a face alone leaves it there
+        public void SendJsonForTest(string json) { Json(json); }   // for test tools
+        public void ClockChannel() { Json("{\"Command\":\"Channel/SetIndex\",\"SelectIndex\":0}"); }
+
+        // its Divoom registration (id and password): BD 2B 00 asks, once it has settled after connecting (it ignores
+        // commands for a moment); the answer arrives in Received
+        protected override void OnConnected()
+        {
+            ClockStore.DeviceId = 0;
+            Later(delegate { for (int i = 0; i < 4 && ClockStore.DeviceId == 0; i++) { Thread.Sleep(1200); SendRaw(Frame(0xBD, new byte[] { 0x2B, 0 })); } });
+        }
+
+        static void Later(Action a) { ThreadPool.QueueUserWorkItem(delegate { try { a(); } catch (Exception e) { var tr = Trace; if (tr != null) tr("> failed: " + e.GetType().Name + ": " + e.Message); } }); }
+        void JsonText(string json) { SendRaw(Frame(1, Encoding.UTF8.GetBytes(json))); }
+
+        // a file for one of its clock faces: BE 00 <length LE32> <name length> <name>; it answers BE 55 00 for the pieces
+        // (01 <length LE32> <number LE16> <up to 256 bytes>) or BE 55 01 <number LE16> for one again
+        volatile byte[][] facePieces;
+        // the gap between a file's pieces. The app's is 40 ms (DeviceFunction U0); tested clean at 15, 10 and 6 ms on
+        // 2026-11-13 (a 546 KB picture: 90 s at 40 ms, 42 s at 15, 35 s at 6, where Bluetooth itself is the limit; no
+        // pieces missed). Pieces it misses it asks for again (BE 55 01), counted in FaceResends
+        public static int FacePaceMs = 10;
+        public volatile int FaceResends;
+        volatile byte[] piecesFor, localSending;   // the file the pieces are of; the one of our own being sent
+        readonly object faceGate = new object();
+        void SendFaceFile(byte[] blob, byte[] name)
+        {
+            lock (faceGate)
+            {
+                var list = new List<byte[]>();
+                for (int i = 0, at = 0; at < blob.Length; i++, at += 256)
+                {
+                    var d = new List<byte> { 1 }; d.AddRange(LE(blob.Length, 4)); d.AddRange(LE(i, 2));
+                    var part = new byte[Math.Min(256, blob.Length - at)]; Array.Copy(blob, at, part, 0, part.Length); d.AddRange(part);
+                    list.Add(Frame(0xBE, d.ToArray()));
+                }
+                facePieces = list.ToArray(); piecesFor = blob;
+                var tr = Trace; if (tr != null) tr("> file " + Encoding.UTF8.GetString(name) + ": " + blob.Length + " bytes, " + list.Count + " pieces, head " + BitConverter.ToString(blob, 0, Math.Min(12, blob.Length)));
+                var head = new List<byte> { 0 }; head.AddRange(LE(blob.Length, 4)); head.Add((byte)name.Length); head.AddRange(name);
+                SendRaw(Frame(0xBE, head.ToArray()));
+            }
+        }
+
+        // what its clock faces ask the phone app for (the Divoom app's bluetooth/u.java and g.java); Trace, when set,
+        // hears each request (for testing)
+        public static Action<string> Trace;
+        const string FileTag = "grOup";   // stands in for "group" in store pictures' names in layouts (BD 2A answers); another (same length) makes it fetch them all afresh
+        void FaceRequest(byte[] f)
+        {
+            byte cmd = f[4];
+            if (cmd == 0x01)
+            {   // JSON it wants passed on to Divoom
+                string j = Encoding.UTF8.GetString(f, 6, f.Length - 9);
+                var m = Regex.Match(j, "\"Command\"\\s*:\\s*\"([^\"]+)\"");
+                if (!m.Success || !DivoomAccount.SignedIn) return;
+                string c = m.Groups[1].Value;
+                if (c == "Channel/DeviceGetMyClock")
+                    Later(delegate
+                    {
+                        var ids = new List<string>(); foreach (var face in ClockStore.Mine()) ids.Add(face.Id.ToString());
+                        JsonText("{\"Command\":\"Channel/DeviceGetMyClock\",\"ClockList\":[" + string.Join(",", ids.ToArray()) + "],\"DeviceId\":" + ClockStore.DeviceId + "}");
+                    });
+                else if (c == "Channel/StoreClockGetList" || c == "Device/GetFileVersion" || c == "Channel/GetOneCustom")
+                {
+                    string rest = Regex.Replace(j.Trim().TrimStart('{').TrimEnd('}'), "\"(Command|Token|UserId|DeviceId|DevicePassword)\"\\s*:\\s*(\"[^\"]*\"|-?\\d+)\\s*,?", "").Trim().TrimEnd(',');
+                    Later(delegate { JsonText(ClockStore.Post(c, rest)); });
+                }
+                return;
+            }
+            if (cmd == 0xBE && f.Length > 7)
+            {
+                var all = facePieces;
+                if (all == null) return;
+                var forFile = piecesFor;
+                if (f[6] == 0) Later(delegate
+                {
+                    foreach (var p in all) { SendRaw(p); Thread.Sleep(FacePaceMs); }
+                    if (forFile != null && forFile == localSending) LocalFaceSent = true;
+                });
+                else if (f[6] == 1 && f.Length > 9) { FaceResends++; int k = f[7] | f[8] << 8; if (k < all.Length) Later(delegate { SendRaw(all[k]); }); }
+                return;
+            }
+            if (cmd != 0xBD || f.Length < 8) return;
+            byte sub = f[6];
+            if (sub == 0x2B && f.Length >= 18)
+            {   // its registration: id LE32, password LE32, type; none yet (0) and signed in: register it as the app would
+                long id = (uint)(f[7] | f[8] << 8 | f[9] << 16 | f[10] << 24);
+                int pw = f[11] | f[12] << 8 | f[13] << 16 | f[14] << 24, type = f[15];
+                if (id != 0) { ClockStore.DeviceId = id; ClockStore.DevicePassword = pw; }
+                else if (DivoomAccount.SignedIn)
+                    Later(delegate
+                    {
+                        long nid; int npw; ClockStore.Register(type, 0, out nid, out npw);
+                        ClockStore.DeviceId = nid; ClockStore.DevicePassword = npw;
+                        var d = new List<byte> { 0x2B, 1 }; d.AddRange(LE(nid, 4)); d.AddRange(LE(npw, 4));
+                        SendRaw(Frame(0xBD, d.ToArray()));
+                    });
+                return;
+            }
+            // our own faces (ShowLocalClock): answered from here
+            if (sub == 0x2A && f.Length >= 11)
+            {
+                int id = f[7] | f[8] << 8 | f[9] << 16 | f[10] << 24; LocalFace lf;
+                lock (localFaces) localFaces.TryGetValue(id, out lf);
+                if (lf != null) { Later(delegate { JsonText(lf.Json); }); return; }
+            }
+            if ((sub == 0x28 || sub == 0x29 || sub == 0x30) && f.Length > 9)
+            {
+                int len = Math.Min(f[7], f.Length - 11);
+                string asked = Encoding.UTF8.GetString(f, 8, Math.Max(0, len));
+                LocalFace lf = null; byte[] extraFile = null;
+                lock (localFaces)
+                {
+                    foreach (var x in localFaces.Values)
+                    {
+                        if (Encoding.UTF8.GetString(x.Name) == asked) lf = x;
+                        byte[] e; if (x.Extra != null && x.Extra.TryGetValue(asked, out e)) extraFile = e;
+                    }
+                }
+                if (extraFile != null)
+                {   // one of its digit pictures (or another extra)
+                    var nm = Encoding.UTF8.GetBytes(asked);
+                    { var tr = Trace; if (tr != null) tr("> asked (" + sub.ToString("X2") + ") " + asked); }
+                    Later(delegate { SendFaceFile(extraFile, nm); }); return;
+                }
+                lock (localFaces)
+                {
+                    // a picture of ours from before a restart (it keeps asking for one cut off mid-way, and asks for
+                    // nothing else meanwhile): the current one under that name, so it can move on
+                    if (lf == null && asked.StartsWith("vavavoom/"))
+                        foreach (var x in localFaces.Values) lf = new LocalFace { Json = x.Json, Name = Encoding.UTF8.GetBytes(asked), File = x.File };
+                }
+                if (lf != null) { LocalFaceAsked = true; localSending = lf.File; Later(delegate { SendFaceFile(lf.File, lf.Name); }); return; }
+            }
+            if (!DivoomAccount.SignedIn || ClockStore.DeviceId == 0) return;
+            if (sub == 0x2A && f.Length >= 11)
+            {   // a face's layout
+                int id = f[7] | f[8] << 8 | f[9] << 16 | f[10] << 24;
+                // its pictures under new names ("group" as FileTag): it keeps files by name, including ones that arrived
+                // broken (sent too fast, before the 40 ms pace), and never asks for those again. Same length: it keeps only
+                // about 51 characters of a name, and Divoom's are about 50
+                Later(delegate { JsonText(Regex.Replace(ClockStore.Post("Device/GetClockInfo", "\"ClockId\":" + id), "\\bgroup(\\d+/M\\d+/)", FileTag + "$1")); });
+            }
+            else if (sub == 0x2D && f.Length >= 11)
+            {   // a font it draws a face's text in
+                int id = f[7] | f[8] << 8 | f[9] << 16 | f[10] << 24;
+                // lowercase "id", as the app sends it (its FontIdsJson has no JSONField name); "Id" gets an SQL error back
+                Later(delegate { JsonText(ClockStore.Post("Device/GetSomeFontInfo", "\"FontIds\":[{\"id\":" + id + "}]")); });
+            }
+            else if ((sub == 0x28 || sub == 0x29 || sub == 0x30) && f.Length > 9)
+            {   // a picture: <name length> <file id>; 29 wants the file as it is, the others in its own format
+                int len = Math.Min(f[7], f.Length - 11);
+                var name = new byte[len]; Array.Copy(f, 8, name, 0, len);
+                string fileId = Encoding.UTF8.GetString(name);
+                if (fileId.StartsWith(FileTag)) fileId = "group" + fileId.Substring(FileTag.Length);
+                { var tr = Trace; if (tr != null) tr("> asked (" + sub.ToString("X2") + ") " + Encoding.UTF8.GetString(name)); }
+                Later(delegate
+                {
+                    var file = ClockStore.File(fileId);
+                    var blob = sub == 0x29 ? file : DivoomFiles.ForDevice(file);
+                    if (blob != null) SendFaceFile(blob, name);
+                    else { var tr = Trace; if (tr != null) tr("> no file for " + fileId + " (type " + (file == null || file.Length == 0 ? -1 : file[0]) + ")"); }
+                });
+            }
+        }
+
+        public override void SetColor(int c)
+        {
+            var px = new int[100];
+            for (int k = 0; k < 100; k++) px[k] = c & 7;
+            ShowImage(px);
+        }
+
+        // Its screen is 160 x 128; designs are square (Divoom's gallery has no wider ones). They go out full screen: the
+        // design exact in the middle (16 x 16 ones enlarged 8 times, crisp), the 16-pixel strips each side a soft,
+        // dimmed glow of its own edge colors, fading toward the outer edges.
+        static int[] Up16(int[] rgb16)
+        {
+            var o = new int[Pixels * Pixels];
+            for (int y = 0; y < Pixels; y++) for (int x = 0; x < Pixels; x++) o[y * Pixels + x] = rgb16[(y / 8) * 16 + x / 8];
+            return o;
+        }
+        static int[] Fill(int[] px)
+        {
+            int side = (Wide - Pixels) / 2;
+            var o = new int[Wide * Pixels];
+            // the glow: the design's outer columns averaged in soft blocks (blurred), mirrored out into the strips
+            const int R = 6;
+            for (int y = 0; y < Pixels; y++)
+            {
+                for (int x = 0; x < Pixels; x++) o[y * Wide + side + x] = px[y * Pixels + x];
+                for (int s = 0; s < 2; s++)
+                    for (int d = 1; d <= side; d++)
+                    {
+                        int srcX = s == 0 ? Math.Min(Pixels - 1, d - 1) : Math.Max(0, Pixels - d);
+                        double rr = 0, gg = 0, bb = 0; int n = 0;
+                        for (int yy = Math.Max(0, y - R); yy <= Math.Min(Pixels - 1, y + R); yy++)
+                            for (int xx = Math.Max(0, srcX - R); xx <= Math.Min(Pixels - 1, srcX + R); xx++)
+                            { int c = px[yy * Pixels + xx]; rr += c >> 16 & 255; gg += c >> 8 & 255; bb += c & 255; n++; }
+                        double k = 0.5 * (1 - 0.6 * d / (double)side) / n;
+                        int x0 = s == 0 ? side - d : side + Pixels - 1 + d;
+                        o[y * Wide + x0] = (int)(rr * k) << 16 | (int)(gg * k) << 8 | (int)(bb * k);
+                    }
+            }
+            return o;
+        }
+        static List<int[]> Filled(List<int[]> frames)
+        {
+            var o = new List<int[]>();
+            foreach (var f in frames) o.Add(Fill(f.Length == Pixels * Pixels ? f : Up16(Proto.ToRgb16(f))));
+            return o;
+        }
+
+        public override void ShowImage(int[] px)
+        {
+            if (px.Length == Wide * Pixels) { ShowWide(new List<int[]> { px }, 1000, 92); return; }
+            ShowWide(Filled(new List<int[]> { px }), 1000, 92);
+        }
+
+        public override void ShowAnimationMs(List<int[]> frames, int ms)
+        {
+            if (frames.Count == 0) return;
+            if (frames.Count > MaxFrames) frames = frames.GetRange(0, MaxFrames);
+            if (frames[0].Length == Wide * Pixels) { ShowWide(frames, ms, 90); return; }
+            ShowWide(Filled(frames), ms, 90);
+        }
+
+        // full-size pictures: each frame 128 x 128 RGB (0xRRGGBB, row by row); a single frame is a still picture.
+        // preview: what the app shows for it (16 x 16)
+        public void ShowBig(List<int[]> frames, int ms, int[] preview, long quality = 92)
+        {
+            if (frames.Count == 0) return;
+            if (frames[0].Length == Pixels * Pixels) { ShowWide(Filled(frames), ms, quality); return; }   // full screen
+            var blob = new List<byte> { 0x23, (byte)Math.Min(255, frames.Count) };
+            blob.AddRange(BE(Math.Max(20, Math.Min(0xFFFF, ms)), 2));
+            blob.Add(Pixels / 16); blob.Add(Pixels / 16);
+            for (int fi = 0; fi < frames.Count && fi < 255; fi++)
+            {
+                var f = frames[fi];
+                var jpg = Jpeg(f, quality);
+                blob.Add(1); blob.AddRange(BE(jpg.Length, 4)); blob.AddRange(jpg);
+            }
+            Upload(blob.ToArray());
+            var copy = new List<int[]>(frames); int delay = ms; var look = preview == null ? null : (int[])preview.Clone();
+            Remember(look, null, () => ShowBig(copy, delay, look, quality));
+        }
+
+        // full-screen pictures: each frame 160 x 128 RGB (0xRRGGBB, row by row), sent as JPEG, 10 x 8 blocks of 16
+        public void ShowWide(List<int[]> frames, int ms, long quality)
+        {
+            if (frames.Count == 0) return;
+            // the device takes about 600 KB in one go (the Divoom app's limit): a busy loop gets a lower JPEG quality
+            List<byte> blob;
+            for (long q = quality; ; q -= 8)
+            {
+                blob = new List<byte> { 0x23, (byte)Math.Min(255, frames.Count) };
+                blob.AddRange(BE(Math.Max(20, Math.Min(0xFFFF, ms)), 2));
+                blob.Add(Pixels / 16); blob.Add(Wide / 16);
+                for (int fi = 0; fi < frames.Count && fi < 255; fi++)
+                {
+                    var jpg = Jpeg(frames[fi], Wide, Pixels, q);
+                    blob.Add(1); blob.AddRange(BE(jpg.Length, 4)); blob.AddRange(jpg);
+                }
+                if (blob.Count <= 580000 || q <= 50) break;
+            }
+            Upload(blob.ToArray());
+            // the app's preview: the middle 128 x 128, shrunk
+            var mid = new int[Pixels * Pixels];
+            for (int y = 0; y < Pixels; y++) Array.Copy(frames[0], y * Wide + (Wide - Pixels) / 2, mid, y * Pixels, Pixels);
+            var copy = new List<int[]>(frames); int delay = ms;
+            Remember(Proto.Shrink128(mid), null, () => ShowWide(copy, delay, quality));
+        }
+
+        // a loop made for this screen (Loop128): JPEG for smooth color, else Divoom's own lossless format
+        public void ShowLoop(List<int[]> frames, int ms, bool photo)
+        {
+            if (frames.Count == 0) return;
+            if (frames[0].Length == Wide * Pixels) { ShowWide(frames, ms, photo ? 82 : 92); return; }
+            var look = Proto.Shrink128(frames[0]);
+            if (photo) ShowBig(frames, ms, look, 80);
+            else ShowDivoom128(Divoom128Writer.File(frames, ms), look);
+        }
+
+        // a 128 x 128 Divoom gallery file (Divoom128), sent as it is: 22 <frames> <ms BE16> 08 08 <length BE32>, then the
+        // end of each frame (BE32, counted from after this table) and the frames themselves
+        public void ShowDivoom128(byte[] file, int[] preview)
+        {
+            if (file == null || file.Length < 10 || file[0] != 0x1A) return;
+            int fileMs; var decoded = Divoom128.Decode(file, out fileMs);
+            if (decoded != null) { ShowWide(Filled(decoded), fileMs > 0 ? fileMs : 100, 92); return; }   // full screen; else as it is
+            int count = file[1], at = 6;
+            var offsets = new List<byte>(); var frames = new List<byte>(); int end = 0;
+            for (int f = 0; f < count && at + 4 <= file.Length; f++)
+            {
+                int len = file[at] << 24 | file[at + 1] << 16 | file[at + 2] << 8 | file[at + 3];
+                if (len <= 0 || at + 4 + len > file.Length) break;
+                for (int i = 0; i < len; i++) frames.Add(file[at + 4 + i]);
+                end += len; offsets.AddRange(BE(end, 4));
+                at += 4 + len;
+            }
+            var blob = new List<byte> { 0x22, (byte)(offsets.Count / 4), file[2], file[3], 8, 8 };
+            blob.AddRange(BE(offsets.Count + frames.Count, 4)); blob.AddRange(offsets); blob.AddRange(frames);
+            Upload(blob.ToArray());
+            var look = preview == null ? null : (int[])preview.Clone();
+            Remember(look, null, () => ShowDivoom128(file, look));
+        }
+
+        // 16 x 16 frames (or 10 x 10 palette ones), for the device to scale up
+        static byte[] Small(List<int[]> frames, int ms)
+        {
+            var rgb = new byte[frames.Count * 768];
+            for (int f = 0; f < frames.Count; f++)
+            {
+                var px = Proto.ToRgb16(frames[f]);
+                for (int k = 0; k < 256; k++) { rgb[f * 768 + k * 3] = (byte)(px[k] >> 16); rgb[f * 768 + k * 3 + 1] = (byte)(px[k] >> 8); rgb[f * 768 + k * 3 + 2] = (byte)px[k]; }
+            }
+            var z = Zstd.Stored(rgb);
+            var blob = new List<byte> { 0x25, (byte)frames.Count };
+            blob.AddRange(BE(Math.Max(20, Math.Min(0xFFFF, ms)), 2));
+            blob.Add(1); blob.Add(1);
+            blob.AddRange(BE(z.Length, 4)); blob.AddRange(z);
+            return blob.ToArray();
+        }
+
+        static byte[] Jpeg(int[] rgb, long quality) { return Jpeg(rgb, Pixels, Pixels, quality); }
+        static byte[] Jpeg(int[] rgb, int w, int h, long quality)
+        {
+            using (var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            {
+                for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) bmp.SetPixel(x, y, Color.FromArgb(rgb[y * w + x] | unchecked((int)0xFF000000)));
+                System.Drawing.Imaging.ImageCodecInfo enc = null;
+                foreach (var e in System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()) if (e.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid) enc = e;
+                var ps = new System.Drawing.Imaging.EncoderParameters(1);
+                ps.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+                using (var ms = new MemoryStream()) { bmp.Save(ms, enc, ps); return ms.ToArray(); }
+            }
+        }
+
+        static byte[] BE(long v, int n) { var o = new byte[n]; for (int i = 0; i < n; i++) o[n - 1 - i] = (byte)(v >> (8 * i)); return o; }
+        static byte[] LE(long v, int n) { var o = new byte[n]; for (int i = 0; i < n; i++) o[i] = (byte)(v >> (8 * i)); return o; }
+
+        // one upload: announce, wait for the device to ask (a moment longer right after it starts up), send the pieces,
+        // then wait for it to say it has them all, so the next upload doesn't run into this one
+        void Upload(byte[] blob)
+        {
+            lock (upload)
+            {
+                int total = blob.Length;
+                var list = new List<byte[]>();
+                for (int i = 0, at = 0; at < total; i++, at += 256)
+                {
+                    var d = new List<byte> { 1 }; d.AddRange(LE(total, 4)); d.AddRange(LE(i, 2));
+                    var part = new byte[Math.Min(256, total - at)]; Array.Copy(blob, at, part, 0, part.Length); d.AddRange(part);
+                    list.Add(Frame(0x8B, d.ToArray()));
+                }
+                pieces = list.ToArray();
+                asked.Reset(); received.Reset();
+                var start = new List<byte> { 0 }; start.AddRange(LE(total, 4));
+                SendRaw(Frame(0x8B, start.ToArray()));
+                if (!asked.WaitOne(4000))
+                {   // not ready yet: once more
+                    SendRaw(Frame(0x8B, start.ToArray()));
+                    if (!asked.WaitOne(6000)) throw new IOException("The Tiivoo 2 didn't ask for the picture");
+                }
+                foreach (var p in pieces) { SendRaw(p); Thread.Sleep(6); }
+                received.WaitOne(3000);
+            }
+        }
+
+        // its replies: 01 <len LE16> 04 <command> 55 <data> <checksum> 02
+        protected override void Received(byte[] buf, int n)
+        {
+            lock (inbox)
+            {
+                for (int i = 0; i < n; i++) inbox.Add(buf[i]);
+                while (true)
+                {
+                    int st = inbox.IndexOf(1);
+                    if (st < 0) { inbox.Clear(); return; }
+                    if (st > 0) inbox.RemoveRange(0, st);
+                    if (inbox.Count < 3) return;
+                    int end = (inbox[1] | inbox[2] << 8) + 3;
+                    if (end > 4096) { inbox.RemoveAt(0); continue; }   // not a frame start
+                    if (inbox.Count <= end) return;
+                    var f = inbox.GetRange(0, end + 1).ToArray();
+                    inbox.RemoveRange(0, end + 1);
+                    if (f.Length < 8 || f[3] != 4 || f[5] != 0x55) continue;
+                    var tr = Trace;
+                    if (tr != null && f[4] != 0xF7) tr(BitConverter.ToString(f, 4, Math.Min(f.Length - 4, 24)));
+                    if (f[4] == 0x8B && f[6] == 0) asked.Set();
+                    else if (f[4] == 0x8B && f[6] == 1 && f.Length > 9)
+                    {
+                        int k = f[7] | f[8] << 8; var all = pieces;
+                        if (all != null && k < all.Length) ThreadPool.QueueUserWorkItem(delegate { try { SendRaw(all[k]); } catch (Exception) { } });
+                    }
+                    else if (f[4] == 0xBD && f[6] == 0x13) received.Set();
+                    else if (f[4] == 0x01 || f[4] == 0xBD || f[4] == 0xBE) FaceRequest(f);
+                }
+            }
+        }
+    }
+
+    // zstd frames that keep the data as it is ("raw" blocks), which any zstd reader takes (RFC 8878)
+    static class Zstd
+    {
+        public static byte[] Stored(byte[] data)
+        {
+            var o = new List<byte> { 0x28, 0xB5, 0x2F, 0xFD, 0xA0 };   // magic; one segment, 4-byte content size
+            for (int i = 0; i < 4; i++) o.Add((byte)(data.Length >> (8 * i)));
+            for (int at = 0; ; at += 65536)
+            {
+                int n = Math.Min(65536, data.Length - at); bool last = at + n >= data.Length;
+                int header = (last ? 1 : 0) | (n << 3);   // block type 0: raw
+                o.Add((byte)header); o.Add((byte)(header >> 8)); o.Add((byte)(header >> 16));
+                for (int i = 0; i < n; i++) o.Add(data[at + i]);
+                if (last) break;
+            }
             return o.ToArray();
         }
     }
@@ -683,6 +1333,16 @@ namespace AuraBoxControl
         public string Key;    // a downloaded design: its key in DesignCache (null for built-in designs and favorites)
         public string Look;   // the Gallery's fingerprint of how it looks, worked out once (see MainForm.LookOf)
         public bool IsAnimation { get { return Category == "Animations" || Frames.Count > 1; } }
+        public byte[] Raw;    // a 128 x 128 design: its file as Divoom made it (sent to a Tiivoo 2 as it is, and saved)
+        public bool Big { get { return Frames.Count > 0 && Frames[0].Length == Divoom128.N * Divoom128.N; } }
+
+        // a copy for favorites or a list
+        public GalleryItem CopyAs(string category, string name)
+        {
+            var copy = new GalleryItem { Category = category, Name = name, Ms = Ms, Raw = Raw };
+            foreach (var f in Frames) copy.Frames.Add((int[])f.Clone());
+            return copy;
+        }
 
         public static List<GalleryItem> Load()
         {
@@ -706,6 +1366,15 @@ namespace AuraBoxControl
             string[] p = line.Split('|');
             var it = new GalleryItem();
             string frames;
+            if (p[0] == "D" && p.Length == 5)   // D|category|name|ms|the 128 x 128 Divoom file, base64
+            {
+                it.Category = p[1]; it.Name = p[2]; int.TryParse(p[3], out it.Ms);
+                try { it.Raw = Convert.FromBase64String(p[4]); } catch (FormatException) { return null; }
+                int time; var all = Divoom128.Decode(it.Raw, out time);
+                if (all == null) return null;
+                it.Frames.AddRange(all);
+                return it;
+            }
             if (p[0] == "R" && p.Length == 5)   // R|category|name|ms|frames: 16 x 16 colors, 768 hex digits a frame
             {
                 it.Category = p[1]; it.Name = p[2]; int.TryParse(p[3], out it.Ms);
@@ -733,6 +1402,8 @@ namespace AuraBoxControl
 
         public string Format(string category)
         {
+            if (Raw != null && Big)
+                return "D|" + category + "|" + Name.Replace("|", "/") + "|" + Ms + "|" + Convert.ToBase64String(Raw);
             if (Frames.Count > 0 && Frames[0].Length == 256)
             {
                 var rgb = new List<string>();
@@ -883,10 +1554,14 @@ namespace AuraBoxControl
     class WeatherInfo
     {
         public double Temp; public int Code; public bool IsDay; public string Unit; public DateTime Fetched;
+        // tomorrow's forecast: high, low and conditions (HasTomorrow false when the forecast didn't come)
+        public bool HasTomorrow; public double TomorrowHigh, TomorrowLow; public int TomorrowCode;
 
-        public string Description
+        public string Description { get { return Describe(Code, IsDay); } }
+        public string TomorrowDescription { get { return Describe(TomorrowCode, true); } }
+
+        public static string Describe(int Code, bool IsDay)
         {
-            get
             {
                 if (Code == 0) return IsDay ? "Clear" : "Clear night";
                 if (Code <= 2) return "Partly cloudy";
@@ -926,7 +1601,8 @@ namespace AuraBoxControl
         public static WeatherInfo Fetch(double lat, double lon, bool fahrenheit)
         {
             string json = Get("https://api.open-meteo.com/v1/forecast?latitude=" + lat.ToString(Inv) + "&longitude=" + lon.ToString(Inv) +
-                              "&current=temperature_2m,weather_code,is_day&temperature_unit=" + (fahrenheit ? "fahrenheit" : "celsius"));
+                              "&current=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=2&timezone=auto" +
+                              "&temperature_unit=" + (fahrenheit ? "fahrenheit" : "celsius"));
             int at = json.IndexOf("\"current\":{", StringComparison.Ordinal);
             if (at < 0) throw new IOException("Unexpected weather response");
             string cur = json.Substring(at);
@@ -934,6 +1610,27 @@ namespace AuraBoxControl
             w.Temp = double.Parse(Field(cur, "temperature_2m"), Inv);
             w.Code = int.Parse(Field(cur, "weather_code"), Inv);
             w.IsDay = Field(cur, "is_day") != "0";
+            // tomorrow: the second entry of each daily list
+            try
+            {
+                int d = json.IndexOf("\"daily\":{", StringComparison.Ordinal);
+                if (d >= 0)
+                {
+                    string daily = json.Substring(d);
+                    Func<string, string> second = name =>
+                    {
+                        var m = System.Text.RegularExpressions.Regex.Match(daily, "\"" + name + "\"\\s*:\\s*\\[\\s*([^,\\]]+)\\s*,\\s*([^,\\]]+)");
+                        return m.Success ? m.Groups[2].Value.Trim() : null;
+                    };
+                    string code = second("weather_code"), hi = second("temperature_2m_max"), lo = second("temperature_2m_min");
+                    if (code != null && hi != null && lo != null && code != "null")
+                    {
+                        w.TomorrowCode = (int)double.Parse(code, Inv); w.TomorrowHigh = double.Parse(hi, Inv); w.TomorrowLow = double.Parse(lo, Inv);
+                        w.HasTomorrow = true;
+                    }
+                }
+            }
+            catch (Exception) { w.HasTomorrow = false; }
             return w;
         }
 
@@ -1181,8 +1878,11 @@ namespace AuraBoxControl
         public int LavaTheme = -1;          // -1 = a new color theme every minute, else a fixed one
         public bool LavaPuddle = true, BounceTemp = true, OnlyOnItems = false;
         public int CountdownMinutes = 5;    // the Countdown animation counts down from this
-        public int TivooVivid = 2, AuraClockColor = 7;   // color boost: Extra Vivid looked best on the Tivoo (checked 2026-11-10)
-        public bool TranslateNames = true; public string DivoomEmail = ""; public long DivoomUserId, DivoomToken;
+        public double FmMhz = 101.1;      // the Tiivoo 2's FM radio station
+        public int GalleryPageSize = 30;   // designs per Gallery page (10 to 150)
+        public int DitooBrightness = 100;  // the Ditoo Pro's full brightness as a percent of its own (lower it if it outshines the Tivoo)
+        public int TivooVivid = 1, AuraClockColor = 7;   // color boost: Vivid (Extra Vivid came out too dark on the real Tivoo, 2026-11-11)
+        public bool TranslateNames = true, GalleryAnimatedOnly = true; public string DivoomEmail = ""; public long DivoomUserId, DivoomToken;
         public int TivooClockStyle = 0, TivooClockColor = 0xFFFFFF; public bool TivooClockWeather, TivooClockTemp, TivooClockCalendar;
         public bool CountdownToDate = false; public DateTime CountdownUntil = new DateTime(DateTime.Now.Year + 1, 1, 1);   // ...or to this
         public bool AudioAux = true;        // audio input on connect: AUX jack (the box falls back to Bluetooth with no cable)
@@ -1201,6 +1901,7 @@ namespace AuraBoxControl
         public bool GalleryAnimate = true;                   // the Gallery plays every animated thumbnail
         public int FavoriteSort;                             // Favorites order: 0 A to Z, 1 newest first, 2 oldest first
         public bool CheckUpdates = true;                     // look for a newer release on GitHub when the app starts
+        public string SelectedDevice = "";                   // the display picked at the top when the app last ran (its address)
         // the Text page's scrolling message (also the playlist's Scrolling Text item)
         public string TextMessage = "I ❤️ U!", TextFont = "Tahoma";
         public int TextColor = 7, TextSpeed = 5;
@@ -1219,6 +1920,20 @@ namespace AuraBoxControl
         }
 
         public void SetSpeed(string id, int v) { lock (AnimSpeeds) AnimSpeeds[id] = Math.Max(1, Math.Min(10, v)); }
+
+        // where each display stands, for the All Displays page: MAC -> left, top and screen width, in millimeters
+        public readonly Dictionary<string, double[]> Layout = new Dictionary<string, double[]>();
+        // displays left out of the animations across all displays (MACs): they keep to their own playlists
+        public readonly HashSet<string> WallOut = new HashSet<string>();
+
+        string WallOutText() { lock (WallOut) return string.Join(";", new List<string>(WallOut).ToArray()); }
+
+        string LayoutText()
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture; var parts = new List<string>();
+            lock (Layout) foreach (var kv in Layout) parts.Add(kv.Key + "@" + kv.Value[0].ToString("0.#", inv) + "," + kv.Value[1].ToString("0.#", inv) + "," + kv.Value[2].ToString("0.#", inv));
+            return string.Join(";", parts.ToArray());
+        }
         // other data files (favorites) go wherever the settings file lives
         public static string DataFile(string name)
         {
@@ -1314,6 +2029,7 @@ namespace AuraBoxControl
                 else if (k == "countdown" && int.TryParse(v, out n)) s.CountdownMinutes = Math.Max(1, Math.Min(99, n));
                 else if (k == "countdown_to_date") s.CountdownToDate = v != "0";
                 else if (k == "gallery_english") s.TranslateNames = v != "0";
+                else if (k == "gallery_animated_only") s.GalleryAnimatedOnly = v != "0";
             else if (k == "divoom_account")   // email|user id|token
             {
                 string[] f = v.Split('|'); long uid, tok;
@@ -1330,6 +2046,9 @@ namespace AuraBoxControl
                         int c; if (int.TryParse(f[4], System.Globalization.NumberStyles.HexNumber, null, out c)) s.TivooClockColor = c;
                     }
                 }
+                else if (k == "fm_mhz") { double d; if (double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d)) s.FmMhz = Math.Max(87.5, Math.Min(108, d)); }
+                else if (k == "gallery_page_size" && int.TryParse(v, out n)) s.GalleryPageSize = Math.Max(10, Math.Min(150, n / 10 * 10));
+                else if (k == "ditoo_brightness" && int.TryParse(v, out n)) s.DitooBrightness = Math.Max(10, Math.Min(100, n));
                 else if (k == "countdown_until")
                 {
                     DateTime d;
@@ -1343,6 +2062,7 @@ namespace AuraBoxControl
                 }
                 else if (k == "gallery_animate") s.GalleryAnimate = v != "0";
                 else if (k == "check_updates") s.CheckUpdates = v != "0";
+                else if (k == "selected_device") s.SelectedDevice = v.Trim();
                 else if (k == "favorite_sort" && int.TryParse(v, out n)) s.FavoriteSort = Math.Max(0, Math.Min(2, n));
                 else if (k == "window")
                 {
@@ -1366,6 +2086,18 @@ namespace AuraBoxControl
                     string[] ids = v.Split(',');
                     for (int i = 0; i < ShowNowSlots && i < ids.Length; i++) if (ids[i].Trim().Length > 0) s.ShowNow[i] = ids[i].Trim();
                 }
+                else if (k == "layout")
+                    foreach (string part in v.Split(';'))
+                    {
+                        string[] f = part.Split('@');
+                        if (f.Length != 2) continue;
+                        string[] nums = f[1].Split(','); double x, y, w;
+                        var inv = System.Globalization.CultureInfo.InvariantCulture; var st = System.Globalization.NumberStyles.Float;
+                        if (nums.Length == 3 && double.TryParse(nums[0], st, inv, out x) && double.TryParse(nums[1], st, inv, out y) && double.TryParse(nums[2], st, inv, out w))
+                            s.Layout[f[0].Trim()] = new[] { x, y, Math.Max(20, Math.Min(300, w)) };
+                    }
+                else if (k == "wall_out")
+                    foreach (string mac in v.Split(';')) { if (mac.Trim().Length > 0) s.WallOut.Add(mac.Trim()); }
                 else if (k == "anim_speeds")
                     foreach (string part in v.Split(','))
                     {
@@ -1409,9 +2141,9 @@ namespace AuraBoxControl
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
                           "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\ncountdown=" + CountdownMinutes + "\r\ncountdown_to_date=" + (CountdownToDate ? 1 : 0) +
-                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
+                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nselected_device=" + SelectedDevice +"\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ngallery_animated_only=" + (GalleryAnimatedOnly ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\nditoo_brightness=" + DitooBrightness + "\r\ngallery_page_size=" + GalleryPageSize + "\r\nfm_mhz=" + FmMhz.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
                           "\r\ntext_message=" + TextMessage.Replace("\r", " ").Replace("\n", " ") + "\r\ntext_font=" + TextFont +
-                          "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
+                          "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nlayout=" + LayoutText() + "\r\nwall_out=" + WallOutText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
                           "\r\nsleep=" + SleepMinutes + ":" + SleepScene + ":" + (SleepOn ? 1 : 0) +
                           "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\ndevice_kind=" + Devices[0].Kind + "\r\n";
@@ -1466,8 +2198,9 @@ namespace AuraBoxControl
             for (int k = 0; k < 100; k++)
             {
                 var r = new Rectangle((k % 10) * Cell + 1, (k / 10) * Cell + 1, Cell - 2, Cell - 2);
-                using (var b = new SolidBrush(Proto.Palette[Pixels[k]])) e.Graphics.FillRectangle(b, r);
-                if (Pixels[k] == 0) using (var p = new Pen(Color.FromArgb(45, 45, 45))) e.Graphics.DrawRectangle(p, r);
+                if (Pixels[k] != 0) { Proto.Led(e.Graphics, r, Proto.Palette[Pixels[k]]); continue; }   // lit like the AuraBox's LEDs
+                using (var b = new SolidBrush(Proto.Palette[0])) e.Graphics.FillRectangle(b, r);
+                using (var p = new Pen(Color.FromArgb(45, 45, 45))) e.Graphics.DrawRectangle(p, r);
             }
         }
 

@@ -20,3 +20,5 @@ __pycache__/
 
 # release files (attached to GitHub releases, not committed)
 dist/
+# the aquarium's photos are the user's own, not part of the release
+Aquarium/
