@@ -60,9 +60,9 @@ display that keeps going from the system tray.
   - Reconnects to the box automatically.
   - Settings backup and restore.
 
-| Animations | Original Modes |
+| Animations | Original Modes (the Tiivoo 2's tools) |
 |---|---|
-| ![Animations page](docs/live.png) | ![Original Modes page](docs/aurabox.png) |
+| ![Animations page](docs/live.png) | ![Original Modes page](docs/modes.png) |
 
 ![Settings page](docs/settings.png)
 

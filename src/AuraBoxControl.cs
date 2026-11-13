@@ -838,7 +838,26 @@ namespace AuraBoxControl
             LocalFaceAsked = LocalFaceSent = false;
             ClockChannel();
             Json("{\"Command\":\"Channel/SetClockSelectId\",\"ClockId\":" + id + "}");
-            Remember(null, "Clock: " + title, () => { ClockChannel(); Json("{\"Command\":\"Channel/SetClockSelectId\",\"ClockId\":" + id + "}"); });
+            Remember(FacePreview(file), "Clock: " + title, () => { ClockChannel(); Json("{\"Command\":\"Channel/SetClockSelectId\",\"ClockId\":" + id + "}"); });
+        }
+
+        // the app's preview of a face background (1F): its first frame's middle 128 x 128, shrunk, as ShowWide's
+        static int[] FacePreview(byte[] file)
+        {
+            try
+            {
+                if (file == null || file.Length < 10 || file[0] != 0x1F) return null;
+                int len = file[6] << 24 | file[7] << 16 | file[8] << 8 | file[9];
+                using (var mem = new MemoryStream(file, 10, len))
+                using (var bmp = new System.Drawing.Bitmap(mem))
+                {
+                    var mid = new int[Pixels * Pixels]; int x0 = (bmp.Width - Pixels) / 2;
+                    for (int y = 0; y < Pixels && y < bmp.Height; y++)
+                        for (int x = 0; x < Pixels; x++) mid[y * Pixels + x] = bmp.GetPixel(x0 + x, y).ToArgb() & 0xFFFFFF;
+                    return Proto.Shrink128(mid);
+                }
+            }
+            catch (Exception) { return null; }
         }
 
         // its clock channel (Channel/SetIndex 0), from another screen such as a tool; picking a face alone leaves it there
@@ -895,8 +914,10 @@ namespace AuraBoxControl
             {   // JSON it wants passed on to Divoom
                 string j = Encoding.UTF8.GetString(f, 6, f.Length - 9);
                 var m = Regex.Match(j, "\"Command\"\\s*:\\s*\"([^\"]+)\"");
-                if (!m.Success || !DivoomAccount.SignedIn) return;
+                if (!m.Success) return;
                 string c = m.Groups[1].Value;
+                { var tr = Trace; if (tr != null) tr("> json " + j.Replace("\n", " ").Replace("\t", "").Substring(0, Math.Min(160, j.Length))); }
+                if (!DivoomAccount.SignedIn) return;
                 if (c == "Channel/DeviceGetMyClock")
                     Later(delegate
                     {
@@ -1229,7 +1250,8 @@ namespace AuraBoxControl
                     inbox.RemoveRange(0, end + 1);
                     if (f.Length < 8 || f[3] != 4 || f[5] != 0x55) continue;
                     var tr = Trace;
-                    if (tr != null && f[4] != 0xF7) tr(BitConverter.ToString(f, 4, Math.Min(f.Length - 4, 24)));
+                    if (tr != null && f[4] != 0xF7) tr(f[4] == 0x01 ? "json from it: " + Encoding.UTF8.GetString(f, 6, Math.Max(0, f.Length - 9)).Replace("\n", " ").Replace("\t", "")
+                                                       : BitConverter.ToString(f, 4, Math.Min(f.Length - 4, 24)));
                     if (f[4] == 0x8B && f[6] == 0) asked.Set();
                     else if (f[4] == 0x8B && f[6] == 1 && f.Length > 9)
                     {

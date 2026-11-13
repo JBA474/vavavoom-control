@@ -1560,11 +1560,15 @@ namespace AuraBoxControl
             var lyricFx = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(246, 136), Width = 160, AccessibleName = "Lyrics text effect" };
             lyricFx.Items.AddRange(Tiivoo2.LyricEffects); lyricFx.SelectedIndex = 0;
             t2.Controls.Add(lyricFx);
-            t2.Controls.Add(Btn("Show Lyrics", 412, 133, 120, delegate
+            // tested 2026-11-13: with music from a PC it shows its visualizer and no words (the lyrics come with the music
+            // from players that send them, not from this app or Divoom's)
+            var lyricsBtn = Btn("Lyrics Screen", 412, 133, 120, delegate
             {
                 int lyricBg = lyricBack.SelectedIndex, lyricHow = lyricFx.SelectedIndex;
-                onT2(d => d.ShowLyrics(lyricBg, lyricHow), "Tiivoo 2 lyrics (for music playing through it)");
-            }, true));
+                onT2(d => d.ShowLyrics(lyricBg, lyricHow), "Tiivoo 2 lyrics screen: words show only for music players that send lyrics; from a PC it shows its visualizer");
+            }, true);
+            new ToolTip().SetToolTip(lyricsBtn, "Words appear only for music players that send lyrics with the song.\r\nWith music from a PC, it shows its sound visualizer.");
+            t2.Controls.Add(lyricsBtn);
 
             t2.Controls.Add(new Label { Text = "Screens:", Location = new Point(14, 188), AutoSize = true });
             t2.Controls.Add(Btn("Photos", 110, 181, 96, delegate { onT2(d => d.ShowPhotos(), "Tiivoo 2 photo album"); }));
