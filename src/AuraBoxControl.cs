@@ -19,7 +19,7 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("VaVaVoom Control")]
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
 
 namespace AuraBoxControl
 {
@@ -147,6 +147,33 @@ namespace AuraBoxControl
                     g.FillRectangle(b, r);
                 }
             }
+        }
+
+        // the Tiivoo 2's whole screen as a preview: 160 x 128, 0xRRGGBB row by row (what it remembers it showed)
+        public const int WideW = 160, WideH = 128;
+        public static bool IsWide(int[] px) { return px != null && px.Length == WideW * WideH; }
+
+        // a picture (0xRRGGBB, row by row) as a bitmap, fast
+        public static Bitmap ToBitmap(int[] px, int w, int h)
+        {
+            var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            var data = bmp.LockBits(new Rectangle(0, 0, w, h), System.Drawing.Imaging.ImageLockMode.WriteOnly, bmp.PixelFormat);
+            try
+            {
+                for (int y = 0; y < h; y++) System.Runtime.InteropServices.Marshal.Copy(px, y * w, data.Scan0 + y * data.Stride, w);
+            }
+            finally { bmp.UnlockBits(data); }
+            return bmp;
+        }
+
+        // a wide preview drawn into a box, its shape kept (5:4), centered
+        public static void DrawWide(Graphics g, Bitmap bmp, RectangleF box)
+        {
+            float s = Math.Min(box.Width / bmp.Width, box.Height / bmp.Height), w = bmp.Width * s, h = bmp.Height * s;
+            var old = g.InterpolationMode; var oldOff = g.PixelOffsetMode;
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear; g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            g.DrawImage(bmp, box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
+            g.InterpolationMode = old; g.PixelOffsetMode = oldOff;
         }
 
         // a 10 x 10 picture stretched to 16 x 16 (some rows and columns doubled) as RGB; a 16 x 16 one as it is
@@ -733,7 +760,8 @@ namespace AuraBoxControl
             var v = new string[8];
             for (int i = 0; i < 8; i++) v[i] = (volumes != null && i < volumes.Length ? Math.Max(0, Math.Min(100, volumes[i])) : 0).ToString();
             Json("{\"Command\":\"WhiteNoise/Set\",\"OnOff\":" + (on ? 1 : 0) + ",\"Time\":" + Math.Max(0, minutes) + ",\"EndStatus\":0,\"Volume\":[" + string.Join(",", v) + "]}");
-            if (on) Remember(null, "White Noise", null);
+            // it's sound: the screen keeps what it shows (the Aquarium Clock's bubbling must not blank its preview)
+            if (on && LastImage == null && LastMode == null) Remember(null, "White Noise", null);
         }
 
         // FM radio: its radio mode (work mode 1), then the frequency in tenths of a MHz (low two digits, then the rest);
@@ -851,10 +879,10 @@ namespace AuraBoxControl
                 using (var mem = new MemoryStream(file, 10, len))
                 using (var bmp = new System.Drawing.Bitmap(mem))
                 {
-                    var mid = new int[Pixels * Pixels]; int x0 = (bmp.Width - Pixels) / 2;
-                    for (int y = 0; y < Pixels && y < bmp.Height; y++)
-                        for (int x = 0; x < Pixels; x++) mid[y * Pixels + x] = bmp.GetPixel(x0 + x, y).ToArgb() & 0xFFFFFF;
-                    return Proto.Shrink128(mid);
+                    var px = new int[Proto.WideW * Proto.WideH];   // its whole first frame (Proto.IsWide)
+                    for (int y = 0; y < Proto.WideH && y < bmp.Height; y++)
+                        for (int x = 0; x < Proto.WideW && x < bmp.Width; x++) px[y * Proto.WideW + x] = bmp.GetPixel(x, y).ToArgb() & 0xFFFFFF;
+                    return px;
                 }
             }
             catch (Exception) { return null; }
@@ -1128,11 +1156,9 @@ namespace AuraBoxControl
                 if (blob.Count <= 580000 || q <= 50) break;
             }
             Upload(blob.ToArray());
-            // the app's preview: the middle 128 x 128, shrunk
-            var mid = new int[Pixels * Pixels];
-            for (int y = 0; y < Pixels; y++) Array.Copy(frames[0], y * Wide + (Wide - Pixels) / 2, mid, y * Pixels, Pixels);
+            // the app's preview: its whole first frame (Proto.IsWide)
             var copy = new List<int[]>(frames); int delay = ms;
-            Remember(Proto.Shrink128(mid), null, () => ShowWide(copy, delay, quality));
+            Remember((int[])frames[0].Clone(), null, () => ShowWide(copy, delay, quality));
         }
 
         // a loop made for this screen (Loop128): JPEG for smooth color, else Divoom's own lossless format
@@ -2203,9 +2229,16 @@ namespace AuraBoxControl
         }
 
         int[] shown16;   // a 16 x 16 color picture on show instead of Pixels
+        Bitmap shownWide;   // or the Tiivoo 2's whole screen (160 x 128)
 
         protected override void OnPaint(PaintEventArgs e)
         {
+            if (shownWide != null)
+            {
+                e.Graphics.Clear(Color.FromArgb(18, 18, 18));
+                Proto.DrawWide(e.Graphics, shownWide, new RectangleF(0, 0, ClientSize.Width, ClientSize.Height));
+                return;
+            }
             if (shown16 != null)
             {
                 int c = Math.Max(1, Math.Min(ClientSize.Width, ClientSize.Height) / 16), off = (Math.Min(ClientSize.Width, ClientSize.Height) - c * 16) / 2;
@@ -2240,8 +2273,15 @@ namespace AuraBoxControl
             if (Changed != null) Changed(this, EventArgs.Empty);
         }
 
+        int[] wideFrom;   // the picture shownWide was made from (unchanged: no new bitmap)
         public void SetAll(int[] px)
         {
+            if (Proto.IsWide(px))
+            {   // just shown, like a 16 x 16 one
+                if (!ReferenceEquals(px, wideFrom)) { if (shownWide != null) shownWide.Dispose(); shownWide = Proto.ToBitmap(px, Proto.WideW, Proto.WideH); wideFrom = px; Invalidate(); }
+                shown16 = null; return;
+            }
+            if (shownWide != null) { shownWide.Dispose(); shownWide = null; wideFrom = null; }
             if (px.Length == 256) { shown16 = (int[])px.Clone(); Invalidate(); return; }   // just shown; drawing stays 10 x 10
             shown16 = null;
             Pixels = (int[])px.Clone(); Invalidate(); if (Changed != null) Changed(this, EventArgs.Empty);

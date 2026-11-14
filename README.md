@@ -106,6 +106,27 @@ Divoom's artwork, so they aren't included in this repository. To add them:
 3. Run `python tools/export_gallery.py prepare.db src/gallery.txt`.
 4. Run `tools\build.cmd`. It embeds `src/gallery.txt` whenever the file is there.
 
+### Optional: photos for the Tiivoo 2's aquarium
+
+On the Tiivoo 2, the Aquarium and Aquarium Clock can use your own photos instead of drawn fish. Put cut-out
+pictures in a folder named `Aquarium` next to `VaVaVoomControl.exe`:
+
+| File | What it is | Shown about |
+|---|---|---|
+| `clownfish.png` | A clownfish, facing right. Used twice: a big one and a small one following it. | 50 px wide |
+| `blue_tang.png` | A blue tang (or any fish), facing right. | 64 px wide |
+| `starfish.png` | A starfish seen from the front; it creeps over the glass and now and then one arm lets go. | 34 px wide |
+| `pirate_wheel.png` | A skeleton ornament at a ship's wheel, standing on the gravel. The wheel turns and the skeleton leans at set places in the picture, so a different ornament may move oddly. | 46 px wide |
+| `plants.png` | A clump of plants, standing on its bottom edge; it sways. | 88 px wide |
+
+- Use PNG files with a transparent background (cut out, nothing around the subject). Any size works: each is
+  shrunk to the width above, so a few hundred pixels across is plenty.
+- The fish need both `clownfish.png` and `blue_tang.png`; without them the tank has its drawn fish. Each of the
+  others is left out when its file isn't there.
+- The pictures are read when the aquarium first plays, so restart VaVaVoom after adding or changing them. For the
+  Aquarium Clock, delete `settings\cache\aquarium_clock_*.bin` too, so its picture is made again.
+- Only use photos you have the right to use. The folder isn't part of this repository.
+
 ## Tools
 
 | Script | What it does |

@@ -3952,7 +3952,9 @@ namespace AuraBoxControl
                 using (var body = new SolidBrush(Color.FromArgb(60, 60, 66))) g.FillRectangle(body, RectangleF.Inflate(r, 5, 5));
                 g.FillRectangle(Brushes.Black, r);
                 var img = w.Image;
-                if (img != null)
+                if (Proto.IsWide(img))
+                    using (var bmp = Proto.ToBitmap(img, Proto.WideW, Proto.WideH)) Proto.DrawWide(g, bmp, r);   // the Tiivoo 2's whole screen
+                else if (img != null)
                 {
                     int n = img.Length == 256 ? 16 : 10;
                     float c = r.Width / n;
@@ -3963,12 +3965,15 @@ namespace AuraBoxControl
                         using (var b = new SolidBrush(col)) g.FillRectangle(b, r.X + k % n * c + 0.5f, r.Y + k / n * c + 0.5f, Math.Max(1, c - 1), Math.Max(1, c - 1));
                     }
                 }
-                else if (w.Mode != null)
+                else if (w.Mode != null && !w.Out)   // (a display left out says so instead, below: the two would overlap)
                     TextRenderer.DrawText(g, w.Mode, Font, Rectangle.Round(r), Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
                 if (w.Out)
                 {
                     using (var veil = new SolidBrush(Color.FromArgb(170, 28, 28, 32))) g.FillRectangle(veil, r);
-                    TextRenderer.DrawText(g, "left out:" + Environment.NewLine + "own playlist", Font, Rectangle.Round(r), Color.Silver, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+                    // at its foot: the name of a display placed just above can lie over its top
+                    // (one short line: the unticked box below already says so, and the tile can be small)
+                    TextRenderer.DrawText(g, "left out", Font, Rectangle.Round(RectangleF.Inflate(r, 0, -3)), Color.Silver,
+                                          TextFormatFlags.HorizontalCenter | TextFormatFlags.Bottom | TextFormatFlags.SingleLine);
                 }
                 else if (!w.Connected)
                 {
@@ -3977,12 +3982,22 @@ namespace AuraBoxControl
                 }
                 using (var grip = new SolidBrush(Color.FromArgb(140, 140, 150)))   // the size handle
                     g.FillPolygon(grip, new[] { new PointF(r.Right + 5, r.Bottom - 7), new PointF(r.Right + 5, r.Bottom + 5), new PointF(r.Right - 7, r.Bottom + 5) });
+            }
+            // each display's box and name after all the screens, on a backing of the page's color, so a screen placed
+            // just below another can't cover them or show through them
+            foreach (var w in tiles)
+            {
+                var r = Screen(w);
                 var box = Box(w);   // in or out of the animations across all displays
+                string label = w.Name + "  ·  " + Math.Round(w.Place[2]) + " mm";
+                var size = TextRenderer.MeasureText(g, label, Font);
+                using (var back = new SolidBrush(Color.FromArgb(225, 28, 28, 32)))
+                    g.FillRectangle(back, box.X - 2, box.Y - 2, box.Width + 8 + size.Width, Math.Max(box.Height, size.Height) + 3);
                 using (var pen = new Pen(Color.FromArgb(170, 170, 180))) g.DrawRectangle(pen, box);
                 if (!w.Out)
                     using (var tick = new Pen(Color.FromArgb(235, 235, 240), 2))
                         g.DrawLines(tick, new[] { new PointF(box.X + 2.5f, box.Y + box.Height / 2f), new PointF(box.X + box.Width * 0.42f, box.Bottom - 3), new PointF(box.Right - 2.5f, box.Y + 3) });
-                TextRenderer.DrawText(g, w.Name + "  ·  " + Math.Round(w.Place[2]) + " mm", Font, new Point(box.Right + 4, (int)r.Bottom + 8), w.Out ? Color.Gray : Color.Silver);
+                TextRenderer.DrawText(g, label, Font, new Point(box.Right + 4, (int)r.Bottom + 8), w.Out ? Color.Gray : Color.Silver);
             }
         }
 
