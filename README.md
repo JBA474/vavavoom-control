@@ -43,7 +43,8 @@ display that keeps going from the system tray.
     that flips to tomorrow's forecast, a Retro Robot with a scanning visor, and a Slot Machine with the odd
     jackpot. Sounds play through the Tiivoo 2's own speaker (it's the PC's Bluetooth speaker too).
   - Aquarium Clock: the aquarium as one of the Tiivoo 2's own clock faces, so it keeps the time even with the PC
-    off, with a bubbling-water sound.
+    off, with a bubbling-water sound. It can also show the weekday and date, and it follows the app's 12/24-hour
+    setting.
   - Clock faces from Divoom's clock store (sign in with your Divoom account), including faces with picture
     digits such as Flip Clock.
   - Its tools (stopwatch, countdown, scoreboard, noise meter), a Pomodoro timer, lyrics, white noise, FM radio
@@ -59,6 +60,7 @@ display that keeps going from the system tray.
   - Start with Windows, optionally hidden in the tray.
   - Reconnects to the box automatically.
   - Settings backup and restore.
+  - Command-line options and keyboard shortcuts for the tools (see below), for desktop shortcuts or a Stream Deck.
 
 | Animations | Original Modes (the Tiivoo 2's tools) |
 |---|---|
@@ -75,6 +77,47 @@ display that keeps going from the system tray.
   The app talks to the display over the Bluetooth serial port (SPP).
 - For Tiivoo 2 clock faces from Divoom's store: a Divoom account (Gallery → Divoom Account). The password is used
   to sign in and isn't saved.
+
+## Command line and keyboard shortcuts
+
+Run `VaVaVoomControl.exe` with these options to control the copy that's already running, without opening its
+window. That makes them handy for desktop shortcuts, a Stream Deck or scripts. If VaVaVoom isn't running yet, it
+starts and runs them once it's up.
+
+| Option | What it does |
+|---|---|
+| `--page <name>` | Opens a page by its name in the sidebar, such as `--page Gallery`. |
+| `--display <name>` | Picks a display, as its name shows at the top (`--display "Tiivoo 2"`). A `--tool` or `--mode` after it goes to that display. |
+| `--mode <animation>` | Plays an animation by its name or id (`--mode "Aquarium Clock"` or `--mode aquaclock`). `--mode playlist` resumes the playlist. |
+| `--tool <command>` | Runs a tool on a Tivoo, Ditoo Pro or Tiivoo 2 (the commands are below). |
+| `--hide` | Sends the window to the tray. |
+| `--tray` | Starts hidden in the tray (used by "start with Windows"). |
+
+Tool commands:
+
+| Command | What it does |
+|---|---|
+| `score:red+1`, `score:blue-1` | Adds or takes away points and shows the scoreboard. |
+| `score:3:2`, `score:reset`, `score:show` | Sets both scores, sets them to 0, or shows the scoreboard as it is. |
+| `stopwatch:start`, `pause`, `reset`, `toggle` | The stopwatch. `toggle` starts it, or pauses it if it's running. |
+| `countdown:5`, `countdown:2:30`, `countdown:stop` | Starts a countdown (minutes, or minutes:seconds), or stops it. |
+| `noise:on`, `noise:off` | The noise meter. |
+
+Without `--display`, a tool goes to the display picked at the top if it has the tools. Otherwise it goes to the
+first connected one that does, a Tiivoo 2 first.
+
+For example, a desktop shortcut with the target
+`"C:\...\VaVaVoomControl.exe" --display "Tiivoo 2" --tool score:red+1` gives red a point.
+
+These keyboard shortcuts work from any program, even with VaVaVoom in the tray. You can turn them off in the
+Tools card on the Original Modes page.
+
+| Keys | What they do |
+|---|---|
+| Ctrl+Alt+1 / Ctrl+Alt+2 | A point for red / blue |
+| Ctrl+Alt+Shift+1 / Ctrl+Alt+Shift+2 | Take a point back from red / blue |
+| Ctrl+Alt+0 | Both scores to 0 |
+| Ctrl+Alt+S | Start or pause the stopwatch |
 
 ## Build
 

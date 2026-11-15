@@ -350,7 +350,231 @@ namespace AuraBoxControl
         protected override void WndProc(ref Message m)
         {
             if (ShowMessage != 0 && m.Msg == ShowMessage) RestoreFromTray();
+            if (m.Msg == WM_HOTKEY)
+            {
+                int k = (int)m.WParam - 0x5600;
+                if (k >= 0 && k < HotkeyCommands.Length) { picked = null; ToolCommand(HotkeyCommands[k]); }
+                return;
+            }
+            if (m.Msg == WM_COPYDATA)
+            {   // a command from a second copy started with --page, --display or --hide (Main); it brings no text otherwise
+                try
+                {
+                    var cds = (COPYDATASTRUCT)Marshal.PtrToStructure(m.LParam, typeof(COPYDATASTRUCT));
+                    if (cds.dwData == (IntPtr)CommandTag && cds.cbData > 0) { RunCommand(Marshal.PtrToStringUni(cds.lpData, cds.cbData / 2).TrimEnd('\0')); m.Result = (IntPtr)1; return; }
+                }
+                catch (Exception) { }
+            }
             base.WndProc(ref m);
+        }
+
+        // Commands from a second copy (shortcuts, a Stream Deck, testing), so nothing has to click in the window: "show",
+        // "hide" (to the tray, as its close button does), "page:<title>" (a page by its name in the sidebar, shown),
+        // "display:<name>" (the display picked, as its Switch button does; a tool or mode after it goes there),
+        // "tool:<tool>" (ToolCommand) and "mode:<animation>" (ModeCommand). Several are separated by ";".
+        void RunCommand(string text)
+        {
+            picked = null;
+            foreach (var part in text.Split(';'))
+            {
+                string c = part.Trim(), arg = c.Contains(":") ? c.Substring(c.IndexOf(':') + 1).Trim() : "";
+                if (c == "show") RestoreFromTray();
+                else if (c == "hide") { if (Visible) { RememberPosition(); SaveSettings(); Hide(); } }
+                else if (c.StartsWith("page:"))
+                {
+                    RestoreFromTray();
+                    int k = pages.FindIndex(pg => string.Equals((string)pg.Tag, arg, StringComparison.OrdinalIgnoreCase));
+                    if (k >= 0) ShowPage(k); else status.Text = "No page called \"" + arg + "\"";
+                }
+                else if (c.StartsWith("display:"))
+                {
+                    var pl = players.Find(x => string.Equals(x.Name, arg, StringComparison.OrdinalIgnoreCase));
+                    if (pl != null) { SelectPlayer(pl); picked = pl; } else status.Text = "No display called \"" + arg + "\"";
+                }
+                else if (c.StartsWith("tool:")) ToolCommand(arg, picked);
+                else if (c.StartsWith("mode:")) ModeCommand(arg, picked ?? sel);
+            }
+        }
+        Player picked;   // the display a command's --display named, for its --tool or --mode (none: as ToolPlayer picks)
+
+        // --mode: a live animation by its id ("aquaclock") or name ("Aquarium Clock"), or "playlist" to resume the playlist
+        void ModeCommand(string what, Player pl)
+        {
+            As(pl, delegate
+            {
+                if (what.Equals("playlist", StringComparison.OrdinalIgnoreCase)) { SetPlaylist(true); status.Text = pl.Name + ": playlist resumed"; return; }
+                var la = Array.Find(LiveAnims, x =>x.Id.Equals(what, StringComparison.OrdinalIgnoreCase) || x.Name.Equals(what, StringComparison.OrdinalIgnoreCase));
+                if (la == null) { status.Text = "No animation called \"" + what + "\""; return; }
+                PlayLive(la.Id);
+                status.Text = la.Name + " playing on the " + pl.Name;
+            });
+        }
+
+        // the display the tools go to: the one named, else the selected display if it has the tools (Tivoo, Ditoo Pro,
+        // Tiivoo 2), else the first connected one that does (a Tiivoo 2 first); null if there's none
+        Player ToolPlayer(Player named)
+        {
+            if (named != null) return named.Box is Tivoo ? named : null;
+            if (sel.Box is Tivoo) return sel;
+            Player best = null;
+            foreach (var pl in players)
+            {
+                if (!(pl.Box is Tivoo)) continue;
+                int score = (pl.Box.Connected ? 2 : 0) + (pl.Box is Tiivoo2 ? 1 : 0);
+                int bestScore = best == null ? -1 : (best.Box.Connected ? 2 : 0) + (best.Box is Tiivoo2 ? 1 : 0);
+                if (score > bestScore) best = pl;
+            }
+            return best;
+        }
+
+        // the Tools card's buttons, as commands (--tool, the keyboard shortcuts):
+        //   stopwatch:start | pause | reset | toggle      score:red+1 | blue-1 | 3:2 | reset | show
+        //   countdown:5 | 5:30 | stop                       noise:on | off
+        bool stopwatchRunning;
+        NumericUpDown scoreRed, scoreBlue;   // the Tools card's scores, which the commands change too
+        void ToolCommand(string spec, Player named = null)
+        {
+            var pl = ToolPlayer(named);
+            if (pl == null) { status.Text = "No Tivoo, Ditoo Pro or Tiivoo 2 for the tools"; return; }
+            string s = spec.Trim().ToLowerInvariant(), what = s, arg = "";
+            int colon = s.IndexOf(':');
+            if (colon >= 0) { what = s.Substring(0, colon); arg = s.Substring(colon + 1).Trim(); }
+            As(pl, delegate
+            {
+                string on = " (" + pl.Name + ")";
+                if (what == "stopwatch")
+                {
+                    if (arg == "toggle") arg = stopwatchRunning ? "pause" : "start";
+                    if (arg == "start" || arg == "") { stopwatchRunning = true; OnTivoo(tv => tv.ShowStopwatch(), "Stopwatch started" + on); }
+                    else if (arg == "pause") { stopwatchRunning = false; OnTivoo(tv => tv.StopwatchControl(0), "Stopwatch paused" + on); }
+                    else if (arg == "reset") { stopwatchRunning = false; OnTivoo(tv => tv.StopwatchControl(2), "Stopwatch reset" + on); }
+                    else status.Text = "Stopwatch: start, pause, reset or toggle";
+                }
+                else if (what == "score")
+                {
+                    int r = (int)scoreRed.Value, b = (int)scoreBlue.Value;
+                    var m = System.Text.RegularExpressions.Regex.Match(arg, @"^(red|blue)\s*([+-])\s*(\d*)$");
+                    var both = System.Text.RegularExpressions.Regex.Match(arg, @"^(\d+)\s*[:,]\s*(\d+)$");
+                    if (m.Success)
+                    {
+                        int n = (m.Groups[3].Value.Length > 0 ? int.Parse(m.Groups[3].Value) : 1) * (m.Groups[2].Value == "-" ? -1 : 1);
+                        if (m.Groups[1].Value == "red") r += n; else b += n;
+                    }
+                    else if (both.Success) { r = int.Parse(both.Groups[1].Value); b = int.Parse(both.Groups[2].Value); }
+                    else if (arg == "reset") r = b = 0;
+                    else if (arg != "show" && arg != "") { status.Text = "Score: red+1, blue-1, 3:2, reset or show"; return; }
+                    r = Math.Max(0, Math.Min(999, r)); b = Math.Max(0, Math.Min(999, b));
+                    scoreRed.Value = r; scoreBlue.Value = b;
+                    OnTivoo(tv => tv.ShowScoreboard(r, b), "Scoreboard " + r + " : " + b + on);
+                }
+                else if (what == "countdown")
+                {
+                    if (arg == "stop") { OnTivoo(tv => tv.StopCountdown(), "Countdown stopped" + on); return; }
+                    var m = System.Text.RegularExpressions.Regex.Match(arg, @"^(\d{1,2})(?::(\d{1,2}))?$");
+                    if (!m.Success) { status.Text = "Countdown: minutes, minutes:seconds or stop"; return; }
+                    int mm = Math.Min(99, int.Parse(m.Groups[1].Value)), ss = m.Groups[2].Success ? Math.Min(59, int.Parse(m.Groups[2].Value)) : 0;
+                    OnTivoo(tv => tv.ShowCountdown(mm, ss), "Countdown " + mm + ":" + ss.ToString("00") + on);
+                }
+                else if (what == "noise")
+                {
+                    if (arg == "on") OnTivoo(tv => tv.ShowNoiseMeter(), "Noise meter on" + on);
+                    else if (arg == "off") OnTivoo(tv => tv.NoiseMeterOff(), "Noise meter off" + on);
+                    else status.Text = "Noise meter: on or off";
+                }
+                else status.Text = "No tool called \"" + what + "\" (stopwatch, score, countdown, noise)";
+            });
+        }
+
+        // keyboard shortcuts for the tools, working from any program and from the tray (Settings turns them off).
+        // Ctrl+Alt+1 / 2: a point for red / blue (with Shift: take one back), Ctrl+Alt+0: scores to 0,
+        // Ctrl+Alt+S: start or pause the stopwatch
+        static readonly string[] HotkeyCommands = { "score:red+1", "score:blue+1", "score:red-1", "score:blue-1", "score:reset", "stopwatch:toggle" };
+        public static readonly string[] HotkeyNames = { "Ctrl+Alt+1", "Ctrl+Alt+2", "Ctrl+Alt+Shift+1", "Ctrl+Alt+Shift+2", "Ctrl+Alt+0", "Ctrl+Alt+S" };
+        const int WM_HOTKEY = 0x0312, MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4, MOD_NOREPEAT = 0x4000;
+        [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr h, int id, int mods, int vk);
+        [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h, int id);
+        string hotkeysTaken = "";   // shortcuts another program already has
+
+        void SetHotkeys(bool on)
+        {
+            if (!IsHandleCreated) return;
+            for (int k = 0; k < HotkeyCommands.Length; k++) UnregisterHotKey(Handle, 0x5600 + k);
+            hotkeysTaken = "";
+            if (!on) return;
+            int[] mods = { 0, 0, MOD_SHIFT, MOD_SHIFT, 0, 0 };
+            int[] keys = { '1', '2', '1', '2', '0', 'S' };
+            var taken = new List<string>();
+            for (int k = 0; k < HotkeyCommands.Length; k++)
+                if (!RegisterHotKey(Handle, 0x5600 + k, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT | mods[k], keys[k])) taken.Add(HotkeyNames[k]);
+            hotkeysTaken = string.Join(", ", taken.ToArray());
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            SetHotkeys(cfg.Hotkeys);
+        }
+
+        const int WM_COPYDATA = 0x004A, CommandTag = 0x56565643;   // "VVVC"
+        [StructLayout(LayoutKind.Sequential)] struct COPYDATASTRUCT { public IntPtr dwData; public int cbData; public IntPtr lpData; }
+        [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, ref COPYDATASTRUCT l);
+        delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc f, IntPtr l);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+        [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+
+        // the running copy's main window (hidden in the tray too), for a second copy's command; zero if none
+        static IntPtr RunningWindow()
+        {
+            var me = System.Diagnostics.Process.GetCurrentProcess();
+            var others = new HashSet<uint>();
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName(me.ProcessName)) if (p.Id != me.Id) others.Add((uint)p.Id);
+            IntPtr found = IntPtr.Zero; long best = -1;
+            EnumWindows((h, l) =>
+            {
+                uint pid; GetWindowThreadProcessId(h, out pid);
+                if (!others.Contains(pid)) return true;
+                var sb = new System.Text.StringBuilder(64); GetWindowText(h, sb, 64);
+                RECT r;
+                if (sb.ToString() == "VaVaVoom Control" && GetWindowRect(h, out r))
+                {   // the form: the biggest window by that name (a small tray notification shares it)
+                    long area = (long)(r.Right - r.Left) * (r.Bottom - r.Top);
+                    if (area > best) { best = area; found = h; }
+                }
+                return true;
+            }, IntPtr.Zero);
+            return found;
+        }
+
+        // a second copy hands its command to the running one: true when it took it
+        static bool SendCommand(string text)
+        {
+            var h = RunningWindow();
+            if (h == IntPtr.Zero) return false;
+            var mem = Marshal.StringToHGlobalUni(text);
+            try
+            {
+                var cds = new COPYDATASTRUCT { dwData = (IntPtr)CommandTag, cbData = (text.Length + 1) * 2, lpData = mem };
+                return SendMessage(h, WM_COPYDATA, IntPtr.Zero, ref cds) != IntPtr.Zero;
+            }
+            finally { Marshal.FreeHGlobal(mem); }
+        }
+
+        // --page, --display and --hide from the command line, as one command ("" when there are none)
+        static string CommandFromArgs(string[] args)
+        {
+            var parts = new List<string>();
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--display" && i + 1 < args.Length) parts.Add("display:" + args[++i]);
+                else if (args[i] == "--page" && i + 1 < args.Length) parts.Add("page:" + args[++i]);
+                else if (args[i] == "--hide") parts.Add("hide");
+                else if (args[i] == "--tool" && i + 1 < args.Length) parts.Add("tool:" + args[++i]);
+                else if (args[i] == "--mode" && i + 1 < args.Length) parts.Add("mode:" + args[++i]);
+            }
+            return string.Join(";", parts.ToArray());
         }
 
         static string RunCommand(bool tray) { return "\"" + Application.ExecutablePath + "\"" + (tray ? " --tray" : ""); }
@@ -788,8 +1012,28 @@ namespace AuraBoxControl
                             if (deviceBox.Text.Length > 0) Connect();
                         }
                     });
+                WriteConnections();
             };
             t.Start();
+        }
+
+        // settings\connections.txt: each display and whether it's connected, written when that changes (dev\check.ps1
+        // reads it). The first line has this copy's process id, so a file left by an earlier run isn't taken as current
+        string connectionsWritten = "";
+        void WriteConnections()
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var pl in players)
+                if (pl.Cfg.Mac.Length > 0) sb.Append(pl.Name + "\t" + (pl.Box.Connected ? "connected" : pl.Connecting ? "connecting" : "not connected") + "\r\n");
+            string text = sb.ToString();
+            if (text == connectionsWritten) return;
+            connectionsWritten = text;
+            try
+            {
+                File.WriteAllText(Settings.DataFile("connections.txt"), "# pid " + System.Diagnostics.Process.GetCurrentProcess().Id + ", " +
+                                  DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\r\n" + text);
+            }
+            catch (Exception) { }
         }
 
         void ConnectNow(ulong addr, string mac, bool sync)
@@ -803,6 +1047,8 @@ namespace AuraBoxControl
                 box.SetTempUnit(cfg.ThermoFahrenheit);   // the box's own thermometer follows the saved unit
                 box.SetAudioInput(cfg.AudioAux);         // the box ignores AUX when no cable is plugged in
                 box.SetBrightness(P.Brightness);
+                var t2 = box as Tiivoo2;
+                if (t2 != null) t2.SetHour24(H24);   // its clock faces' hours follow the Clock & Weather page
             }
         }
 
@@ -1380,6 +1626,13 @@ namespace AuraBoxControl
             Tivoo.Vivid = cfg.TivooVivid;
             DivoomCloud.PageSize = cfg.GalleryPageSize;
             AuraBox.ClockH24 = H24; AuraBox.ClockColor = cfg.AuraClockColor;
+            bool h24 = H24;
+            if (players != null)
+                foreach (var pl in players)
+                {   // a Tiivoo 2's clock faces (the Aquarium Clock too) switch at once
+                    var t2 = pl.Box as Tiivoo2;
+                    if (t2 != null && t2.Connected) ThreadPool.QueueUserWorkItem(delegate { try { t2.SetHour24(h24); } catch (Exception) { } });
+                }
         }
 
         // the current weather to a Tivoo (for its clock's weather and its weather screen)
@@ -1458,9 +1711,9 @@ namespace AuraBoxControl
             // tools: scoreboard, countdown, stopwatch, noise meter
             var tools = NewCard("Tools", 0, 280, CW, 148);
             tools.Controls.Add(new Label { Text = "Red:", Location = new Point(14, 44), AutoSize = true });
-            var red = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(56, 40), Width = 60 };
+            var red = scoreRed = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(56, 40), Width = 60 };
             tools.Controls.Add(new Label { Text = "Blue:", Location = new Point(128, 44), AutoSize = true });
-            var blue = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(174, 40), Width = 60 };
+            var blue = scoreBlue = new NumericUpDown { Minimum = 0, Maximum = 999, Location = new Point(174, 40), Width = 60 };
             tools.Controls.Add(red); tools.Controls.Add(blue);
             tools.Controls.Add(Btn("Show Scoreboard", 246, 37, 150, delegate
             {
@@ -1468,6 +1721,16 @@ namespace AuraBoxControl
                 OnTivoo(tv => tv.ShowScoreboard(r, b), "Scoreboard " + r + " : " + b);
             }));
             tools.Controls.Add(Note("Change a score and\r\nshow it again to update.", 410, 36));
+            // keyboard shortcuts for the scoreboard and stopwatch, from any program (SetHotkeys)
+            var keysBox = new CheckBox { Text = "Shortcuts: Ctrl+Alt+1, 2, 0, S", Location = new Point(400, 78), AutoSize = true, Checked = cfg.Hotkeys };
+            new ToolTip { AutoPopDelay = 20000 }.SetToolTip(keysBox, "Work from any program, even with VaVaVoom in the tray:\r\n" +
+                "Ctrl+Alt+1 / Ctrl+Alt+2: a point for red / blue (add Shift to take one back)\r\nCtrl+Alt+0: both scores to 0\r\nCtrl+Alt+S: start or pause the stopwatch");
+            keysBox.CheckedChanged += delegate
+            {
+                cfg.Hotkeys = keysBox.Checked; SaveSettings(); SetHotkeys(cfg.Hotkeys);
+                status.Text = !cfg.Hotkeys ? "Tool shortcuts off" : hotkeysTaken.Length == 0 ? "Tool shortcuts on" : "Tool shortcuts on, except " + hotkeysTaken + " (another program has them)";
+            };
+            tools.Controls.Add(keysBox);
             tools.Controls.Add(new Label { Text = "Countdown:", Location = new Point(14, 80), AutoSize = true });
             var mm = new NumericUpDown { Minimum = 0, Maximum = 99, Value = 5, Location = new Point(100, 76), Width = 50 };
             var ss = new TwoDigitUpDown { Minimum = 0, Maximum = 59, Value = 0, Location = new Point(164, 76), Width = 50 };
@@ -1481,9 +1744,9 @@ namespace AuraBoxControl
             tools.Controls.Add(Btn("Stop", 308, 73, 70, delegate { OnTivoo(tv => tv.StopCountdown(), "Countdown stopped"); }));
             // the stopwatch and noise meter run on the device itself; these are the Divoom app's own buttons for them
             tools.Controls.Add(new Label { Text = "Stopwatch:", Location = new Point(14, 116), AutoSize = true });
-            tools.Controls.Add(Btn("Start", 100, 109, 70, delegate { OnTivoo(tv => tv.ShowStopwatch(), "Stopwatch started"); }));
-            tools.Controls.Add(Btn("Pause", 176, 109, 70, delegate { OnTivoo(tv => tv.StopwatchControl(0), "Stopwatch paused"); }));
-            tools.Controls.Add(Btn("Reset", 252, 109, 70, delegate { OnTivoo(tv => tv.StopwatchControl(2), "Stopwatch reset"); }));
+            tools.Controls.Add(Btn("Start", 100, 109, 70, delegate { ToolCommand("stopwatch:start", sel); }));
+            tools.Controls.Add(Btn("Pause", 176, 109, 70, delegate { ToolCommand("stopwatch:pause", sel); }));
+            tools.Controls.Add(Btn("Reset", 252, 109, 70, delegate { ToolCommand("stopwatch:reset", sel); }));
             tools.Controls.Add(new Label { Text = "Noise meter:", Location = new Point(346, 116), AutoSize = true });
             tools.Controls.Add(Btn("On", 440, 109, 60, delegate { OnTivoo(tv => tv.ShowNoiseMeter(), "Noise meter on"); }));
             tools.Controls.Add(Btn("Off", 506, 109, 60, delegate { OnTivoo(tv => tv.NoiseMeterOff(), "Noise meter off"); }));
@@ -1601,7 +1864,16 @@ namespace AuraBoxControl
             p.Controls.Add(t2);
 
             // the Tiivoo 2's clock faces, from Divoom's clock store (ClockStore; needs the Divoom account)
-            var faces = NewCard("Tiivoo 2: Clock Faces", 0, 1018, CW, 340);
+            var faces = NewCard("Tiivoo 2: Clock Faces", 0, 1018, CW, 376);
+            // VaVaVoom's own Aquarium Clock (a face made on this PC; its time is kept and drawn by the Tiivoo 2)
+            var aquaDate = new CheckBox { Text = "Aquarium Clock: show the weekday and date beside the time", Location = new Point(14, 336), AutoSize = true, Checked = cfg.AquaDate };
+            aquaDate.CheckedChanged += delegate
+            {
+                cfg.AquaDate = aquaDate.Checked; SaveSettings();
+                status.Text = "Aquarium Clock: " + (cfg.AquaDate ? "weekday and date on" : "time only") + " (shows the next time it starts)";
+            };
+            faces.Controls.Add(aquaDate);
+            faces.Controls.Add(Note("12 or 24 hours: Clock & Weather page.", 450, 338));
             faces.Controls.Add(new Label { Text = "Shelf:", Location = new Point(14, 44), AutoSize = true });
             var shelf = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(110, 40), Width = 220, AccessibleName = "Clock face shelf" };
             faces.Controls.Add(shelf);
@@ -2133,7 +2405,7 @@ namespace AuraBoxControl
             animBtn.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             animBtn.AccessibleName = animateAll ? "Pause animations" : "Play animations";
             p.Controls.Add(animBtn);
-            var title = new Label { Location = new Point(X, 36), Size = new Size(VW - 300, 22), Font = Theme.Semibold(10f), UseMnemonic = false, AutoEllipsis = true };
+            var title = new Label { Location = new Point(X, 36), Size = new Size(VW - 402, 22), Font = Theme.Semibold(10f), UseMnemonic = false, AutoEllipsis = true };   // leaves room for Size
             p.Controls.Add(title);
             // how many designs each page of an online list loads (10 to 150): more to scroll through, fewer to load
             // faster; under the lists, above the account button
@@ -2157,7 +2429,8 @@ namespace AuraBoxControl
             var totals = new Dictionary<string, int>();   // source -> how many designs, once known
             var counting = new HashSet<string>();
 
-            int thumb = Theme.Px(50);
+            // the pictures' size (the Size slider by the page buttons); an ImageList goes up to 256 pixels
+            int thumb = Math.Min(256, Theme.Px(cfg.GalleryThumb));
             var images = new ImageList { ImageSize = new Size(thumb, thumb), ColorDepth = ColorDepth.Depth24Bit };
             var view = new ListView { Location = new Point(X, 64), Size = new Size(VW, 388), View = View.LargeIcon, LargeImageList = images,
                                       MultiSelect = true, HideSelection = false, BorderStyle = BorderStyle.None };
@@ -2187,6 +2460,28 @@ namespace AuraBoxControl
                 shown.Add(it);
             };
             Action<GalleryItem> addItem = delegate (GalleryItem it) { pageItems.Add(it); if (matches(it)) display(it); };
+
+            // Size: the pictures drawn larger (50 to 160 pixels), to see them better; every one on show is drawn again
+            var sizeLabel = new Label { Text = "Size", Location = new Point(W - 396, 36), AutoSize = true, Tag = "subtle", UseMnemonic = false };
+            var thumbSize = new TrackBar { Minimum = 5, Maximum = 16, SmallChange = 1, LargeChange = 2, Location = new Point(W - 364, 31), Width = 70,
+                                           AutoSize = false, Height = Theme.Px(26), TickStyle = TickStyle.None, Value = Math.Max(5, Math.Min(16, cfg.GalleryThumb / 10)),
+                                           AccessibleName = "Picture size" };
+            new ToolTip().SetToolTip(thumbSize, "Make the pictures bigger or smaller");
+            sizeLabel.Anchor = thumbSize.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            p.Controls.Add(sizeLabel); p.Controls.Add(thumbSize);
+            thumbSize.ValueChanged += delegate
+            {
+                cfg.GalleryThumb = thumbSize.Value * 10; SaveSettings();
+                thumb = Math.Min(256, Theme.Px(cfg.GalleryThumb));
+                view.BeginUpdate();
+                try
+                {
+                    images.Images.Clear();
+                    images.ImageSize = new Size(thumb, thumb);
+                    foreach (var it in shown) images.Images.Add(Proto.Render(it.Frames[BestFrame(it)], Math.Max(1, thumb / 10)));   // same order: each item keeps its picture
+                }
+                finally { view.EndUpdate(); }
+            };
             Action clearView = delegate { view.Items.Clear(); images.Images.Clear(); shown.Clear(); pageItems.Clear(); };
             bool searching = false;   // set while Enter starts a Divoom search, so the box's text isn't used as a filter
             bool toldTranslate = false;   // the translator's trouble is mentioned once
@@ -3337,11 +3632,24 @@ namespace AuraBoxControl
         // its outline (red in the font file) grey. The hour's tens has a blank "0", so 1:47 shows as "1:47", not "01:47"
         // (the hour item, kind 3, always writes two digits), and each "1" sits in the middle of its place. The colon
         // (outlined the same) is part of the picture.
-        public static string[] AquariumClockItems(string tens, string digits)
+        // withDate: the time moves to the left and the weekday and date sit together on the right (the user's layout,
+        // 2026-11-15), drawn by the Tiivoo 2 in Divoom font 418 (8 x 9, letters and digits; the store's CyberChrono face
+        // uses it for both), white with a grey outline like the time. Each item is a little wider than its text: one
+        // exactly as wide loses its last letter
+        public static string[] AquariumClockItems(string tens, string digits, bool withDate = false)
         {
-            Func<int, int, string, string> item = (x, kind, file) => x + ",112,9,12," + kind + ",4,1,2,FFFFFF,FF0000,0," + file;
-            return new[] { item(60, 59, tens), item(69, 60, digits), item(83, 61, digits), item(92, 62, digits) };
+            int x0 = TimeLeft(withDate);
+            Func<int, int, string, string> item = (x, kind, file) => (x0 + x) + ",112,9,12," + kind + ",4,1,2,FFFFFF,FF0000,0," + file;
+            var items = new List<string> { item(0, 59, tens), item(9, 60, digits), item(23, 61, digits), item(32, 62, digits) };
+            if (withDate)
+            {
+                items.Add("78,114,32,9,37,4,1,418,FFFFFF,707070,0,");    // weekday (SUN)
+                items.Add("110,114,48,9,156,4,1,418,FFFFFF,707070,0,");  // date, to the right edge
+            }
+            return items.ToArray();
         }
+        // where the time starts (its hour's tens place): centered along the bottom, or at the left with the date
+        static int TimeLeft(bool withDate) { return withDate ? 2 : 60; }
 
         // the digit pictures by name: [0] the hour's tens (blank 0), [1] all ten; names change with the pictures (the
         // device keeps files by name). Made once from the font and kept in settings\cache
@@ -3384,37 +3692,40 @@ namespace AuraBoxControl
         }
         // what the picture's own part of the clock looks like; a change here makes a new picture (else the saved one is reused)
         const string AquariumClockLook = "colon-366-grey_plants-ragged";   // (the digits are pictures of their own, AquariumClockDigits)
-        public static List<int[]> AquariumClockFrames(out int ms)
+        public static List<int[]> AquariumClockFrames(out int ms, bool withDate = false)
         {
             double play;
             var frames = new Aquarium128().Next(out ms, out play);
             const int W2 = Tiivoo2.Wide;
+            int c = TimeLeft(withDate) + 18;   // the colon's outline, between the hour (two 9-wide places) and the minutes
             foreach (var f in frames)
                 foreach (int top in new[] { 115, 119 })   // the colon: two white 2 x 2 dots, each in a grey 1-pixel outline
                 {
-                    for (int y = top - 1; y <= top + 2; y++) for (int x = 78; x <= 81; x++) f[y * W2 + x] = 0x707070;
-                    for (int y = top; y <= top + 1; y++) for (int x = 79; x <= 80; x++) f[y * W2 + x] = 0xFFFFFF;
+                    for (int y = top - 1; y <= top + 2; y++) for (int x = c; x <= c + 3; x++) f[y * W2 + x] = 0x707070;
+                    for (int y = top; y <= top + 1; y++) for (int x = c + 1; x <= c + 2; x++) f[y * W2 + x] = 0xFFFFFF;
                 }
             return frames;
         }
 
         // the picture, made once and kept (settings\cache): every restart sends the same one, which the Tiivoo 2 already
-        // has, so a restart mid-way never leaves it asking for a picture that no longer exists
-        static byte[] AquariumClockFile()
+        // has, so a restart mid-way never leaves it asking for a picture that no longer exists. One for each layout
+        static byte[] AquariumClockFile(bool withDate)
         {
-            string path = System.IO.Path.Combine(Settings.DataFile("cache"), "aquarium_clock_" + AquariumClockLook + ".bin");
+            string path = System.IO.Path.Combine(Settings.DataFile("cache"), "aquarium_clock_" + AquariumClockLook + (withDate ? "_left" : "") + ".bin");
             try { if (System.IO.File.Exists(path)) return System.IO.File.ReadAllBytes(path); } catch (Exception) { }
-            int ms; var file = Tiivoo2.LocalClockFile(AquariumClockFrames(out ms), ms);
+            int ms; var file = Tiivoo2.LocalClockFile(AquariumClockFrames(out ms, withDate), ms);
             try { System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)); System.IO.File.WriteAllBytes(path, file); } catch (Exception) { }
             return file;
         }
 
         void AquariumClock(Tiivoo2 t2, DateTime until, Action shown)
         {
-            var file = AquariumClockFile();
+            bool withDate = cfg.AquaDate;
+            var file = AquariumClockFile(withDate);
             string tens, digits; var pictures = AquariumClockDigits(out tens, out digits);
-            var items = AquariumClockItems(tens, digits);
-            if (!JobSend(delegate { t2.ShowLocalClock(AquariumClockId, "Aquarium Clock", file, items, pictures); })) return;
+            var items = AquariumClockItems(tens, digits, withDate);
+            bool h24 = H24;
+            if (!JobSend(delegate { t2.SetHour24(h24); t2.ShowLocalClock(AquariumClockId, "Aquarium Clock", file, items, pictures); })) return;
             SetStatus("Aquarium Clock: sending the aquarium to the Tiivoo 2 (about a minute and a half)...");
             var started = DateTime.Now;
             while (!jobStop && Before(until) && !t2.LocalFaceSent && (t2.LocalFaceAsked || (DateTime.Now - started).TotalSeconds < 20) && (DateTime.Now - started).TotalSeconds < 300)
@@ -4847,12 +5158,20 @@ namespace AuraBoxControl
                     try { first = mutex.WaitOne(15000); }
                     catch (AbandonedMutexException) { first = true; }
                 }
-                if (!first) { PostMessage((IntPtr)0xFFFF, ShowMessage, IntPtr.Zero, IntPtr.Zero); return; }   // show the running copy
+                if (!first)
+                {   // the running copy: its command (--page, --display, --hide), or shown
+                    string command = CommandFromArgs(args);
+                    if (!SendCommand(command.Length > 0 ? command : "show")) PostMessage((IntPtr)0xFFFF, ShowMessage, IntPtr.Zero, IntPtr.Zero);
+                    return;
+                }
                 var settings = Settings.Load();
                 Theme.Init(settings.ThemeMode);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new MainForm(settings, Array.IndexOf(args, "--tray") >= 0));
+                var form = new MainForm(settings, Array.IndexOf(args, "--tray") >= 0);
+                string startCommand = CommandFromArgs(args);   // --page / --display / --hide at start, once it's up
+                if (startCommand.Length > 0) form.HandleCreated += delegate { form.BeginInvoke((Action)delegate { form.RunCommand(startCommand); }); };
+                Application.Run(form);
             }
         }
     }

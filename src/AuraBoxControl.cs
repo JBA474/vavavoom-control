@@ -19,7 +19,7 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("VaVaVoom Control")]
-[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
 
 namespace AuraBoxControl
 {
@@ -103,20 +103,22 @@ namespace AuraBoxControl
         public static Bitmap Render(int[] px, int cell)
         {
             int n = Side(px), size = 10 * cell, c = Math.Max(1, size / n);
+            if (n > size || n >= 64)
+            {   // a big picture (128 x 128): each pixel shown takes the nearest of its, filling the whole square at any
+                // size (whole-pixel blocks would leave a dark border when the Gallery's pictures are made larger)
+                var o = new int[size * size];
+                for (int y = 0; y < size; y++)
+                    for (int x = 0; x < size; x++)
+                    {
+                        var col = ColorAt(px, (y * n / size) * n + x * n / size);
+                        o[y * size + x] = col.R + col.G + col.B == 0 ? 0x282828 : col.R << 16 | col.G << 8 | col.B;
+                    }
+                return ToBitmap(o, size, size);
+            }
             var bmp = new Bitmap(size, size);
             using (var g = Graphics.FromImage(bmp))
             {
                 g.Clear(Color.FromArgb(20, 20, 20));
-                if (n > size)
-                {   // bigger than the picture (128 x 128): each pixel of it shows the nearest one
-                    for (int y = 0; y < size; y++)
-                        for (int x = 0; x < size; x++)
-                        {
-                            var col = ColorAt(px, (y * n / size) * n + x * n / size);
-                            bmp.SetPixel(x, y, col.R + col.G + col.B == 0 ? Color.FromArgb(40, 40, 40) : col);
-                        }
-                    return bmp;
-                }
                 int gap = c > 3 ? 1 : 0, off = (size - c * n) / 2;
                 for (int k = 0; k < n * n; k++)
                 {
@@ -891,6 +893,13 @@ namespace AuraBoxControl
         // its clock channel (Channel/SetIndex 0), from another screen such as a tool; picking a face alone leaves it there
         public void SendJsonForTest(string json) { Json(json); }   // for test tools
         public void ClockChannel() { Json("{\"Command\":\"Channel/SetIndex\",\"SelectIndex\":0}"); }
+
+        // 12 or 24 hours for its clock faces' hour items (the Divoom app's own setting); the Tivoo's 0x2D as well
+        public void SetHour24(bool on)
+        {
+            Json("{\"Command\":\"Device/SetTime24Flag\",\"Mode\":" + (on ? 1 : 0) + "}");
+            SendFrame(Frame(0x2D, new[] { (byte)(on ? 1 : 0) }), 666);
+        }
 
         // its Divoom registration (id and password): BD 2B 00 asks, once it has settled after connecting (it ignores
         // commands for a moment); the answer arrives in Received
@@ -1928,6 +1937,7 @@ namespace AuraBoxControl
         public int CountdownMinutes = 5;    // the Countdown animation counts down from this
         public double FmMhz = 101.1;      // the Tiivoo 2's FM radio station
         public int GalleryPageSize = 30;   // designs per Gallery page (10 to 150)
+        public int GalleryThumb = 50;      // how big the Gallery's pictures are drawn (50 to 160, before Windows scaling)
         public int DitooBrightness = 100;  // the Ditoo Pro's full brightness as a percent of its own (lower it if it outshines the Tivoo)
         public int TivooVivid = 1, AuraClockColor = 7;   // color boost: Vivid (Extra Vivid came out too dark on the real Tivoo, 2026-11-11)
         public bool TranslateNames = true, GalleryAnimatedOnly = true; public string DivoomEmail = ""; public long DivoomUserId, DivoomToken;
@@ -1943,6 +1953,8 @@ namespace AuraBoxControl
         // the alarm and sleep timer as last sent (the box can't be asked for them)
         public int AlarmHour = 7, AlarmMinute = 0, AlarmScene = 0, SleepMinutes = 30, SleepScene = 0;
         public bool AlarmOn = false, SleepOn = false;
+        public bool Hotkeys = true;             // Ctrl+Alt shortcuts for the Tivoo tools (scoreboard, stopwatch), even from the tray
+        public bool AquaDate = false;           // the Aquarium Clock shows the weekday and date beside the time
         public bool ShowNotifications = true;   // the app's own Windows notifications (startup in the tray, closing to the tray)
         public bool HasWindowPos = false; public int WindowX, WindowY;   // where the window was when it last closed (screen pixels)
         public int WindowW, WindowH; public bool WindowMax;   // the window's size when it last closed (0 = the standard size)
@@ -2078,6 +2090,7 @@ namespace AuraBoxControl
                 else if (k == "countdown_to_date") s.CountdownToDate = v != "0";
                 else if (k == "gallery_english") s.TranslateNames = v != "0";
                 else if (k == "gallery_animated_only") s.GalleryAnimatedOnly = v != "0";
+                else if (k == "gallery_thumb" && int.TryParse(v, out n)) s.GalleryThumb = Math.Max(50, Math.Min(160, n));
             else if (k == "divoom_account")   // email|user id|token
             {
                 string[] f = v.Split('|'); long uid, tok;
@@ -2103,6 +2116,8 @@ namespace AuraBoxControl
                     if (DateTime.TryParseExact(v, "yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out d)) s.CountdownUntil = d;
                 }
                 else if (k == "show_notifications") s.ShowNotifications = v != "0";
+                else if (k == "hotkeys") s.Hotkeys = v != "0";
+                else if (k == "aqua_date") s.AquaDate = v == "1";
                 else if (k == "window_size")   // width,height[,max]
                 {
                     string[] wh = v.Split(','); int ww, hh;
@@ -2189,7 +2204,7 @@ namespace AuraBoxControl
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
                           "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\ncountdown=" + CountdownMinutes + "\r\ncountdown_to_date=" + (CountdownToDate ? 1 : 0) +
-                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nselected_device=" + SelectedDevice +"\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ngallery_animated_only=" + (GalleryAnimatedOnly ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\nditoo_brightness=" + DitooBrightness + "\r\ngallery_page_size=" + GalleryPageSize + "\r\nfm_mhz=" + FmMhz.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
+                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nselected_device=" + SelectedDevice +"\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ngallery_animated_only=" + (GalleryAnimatedOnly ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\nditoo_brightness=" + DitooBrightness + "\r\ngallery_page_size=" + GalleryPageSize + "\r\ngallery_thumb=" + GalleryThumb +"\r\nfm_mhz=" + FmMhz.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + "\r\nhotkeys=" + (Hotkeys ? 1 : 0) + "\r\naqua_date=" + (AquaDate ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
                           "\r\ntext_message=" + TextMessage.Replace("\r", " ").Replace("\n", " ") + "\r\ntext_font=" + TextFont +
                           "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nlayout=" + LayoutText() + "\r\nwall_out=" + WallOutText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +

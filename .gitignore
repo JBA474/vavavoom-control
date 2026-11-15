@@ -22,3 +22,5 @@ __pycache__/
 dist/
 # the aquarium's photos are the user's own, not part of the release
 Aquarium/
+# test tools kept beside the project (they read the settings file; not part of the release)
+dev/
