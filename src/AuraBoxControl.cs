@@ -19,7 +19,7 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("VaVaVoom Control")]
-[assembly: System.Reflection.AssemblyVersion("1.3.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.4.0")]
 
 namespace AuraBoxControl
 {
@@ -1914,6 +1914,15 @@ namespace AuraBoxControl
         }
     }
 
+    // a group of displays on the All Displays page: where each one stands (MAC -> left, top and screen width, in
+    // millimeters) and which ones are left out of its animations (they keep to their own playlists)
+    class WallProfile
+    {
+        public string Name;
+        public readonly Dictionary<string, double[]> Layout = new Dictionary<string, double[]>();
+        public readonly HashSet<string> Out = new HashSet<string>();
+    }
+
     // one display's own settings: which paired device it is, its serial channel, and its own playlist
     class DeviceSettings
     {
@@ -1963,6 +1972,8 @@ namespace AuraBoxControl
         public bool AlarmOn = false, SleepOn = false;
         public bool Hotkeys = true;             // Ctrl+Alt shortcuts for the Tivoo tools (scoreboard, stopwatch), even from the tray
         public bool AquaDate = false;           // the Aquarium Clock shows the weekday and date beside the time
+        public string Birthdays = "";           // Days to Next Holiday counts down to these too: "Name|month|day;..."
+        public bool HolidaysToo = true;         // ... and to the US holidays (off: birthdays only)
         public bool ShowNotifications = true;   // the app's own Windows notifications (startup in the tray, closing to the tray)
         public bool HasWindowPos = false; public int WindowX, WindowY;   // where the window was when it last closed (screen pixels)
         public int WindowW, WindowH; public bool WindowMax;   // the window's size when it last closed (0 = the standard size)
@@ -1989,18 +2000,53 @@ namespace AuraBoxControl
 
         public void SetSpeed(string id, int v) { lock (AnimSpeeds) AnimSpeeds[id] = Math.Max(1, Math.Min(10, v)); }
 
-        // where each display stands, for the All Displays page: MAC -> left, top and screen width, in millimeters
-        public readonly Dictionary<string, double[]> Layout = new Dictionary<string, double[]>();
-        // displays left out of the animations across all displays (MACs): they keep to their own playlists
-        public readonly HashSet<string> WallOut = new HashSet<string>();
+        // the All Displays page's profiles: groups of displays, each with its own layout, that animations run across.
+        // The first is kept in the older keys (layout=, wall_out=) so earlier versions still read it.
+        public readonly List<WallProfile> Profiles = new List<WallProfile> { new WallProfile { Name = "All Displays" } };
+        public int WallProfileIndex;   // the profile the page showed last
+        public bool WallV2;            // profiles saved before: the AuraBoxes were left out of the first profile once
 
-        string WallOutText() { lock (WallOut) return string.Join(";", new List<string>(WallOut).ToArray()); }
+        static string OutText(HashSet<string> set) { lock (set) return string.Join(";", new List<string>(set).ToArray()); }
 
-        string LayoutText()
+        static string LayoutText(Dictionary<string, double[]> layout)
         {
             var inv = System.Globalization.CultureInfo.InvariantCulture; var parts = new List<string>();
-            lock (Layout) foreach (var kv in Layout) parts.Add(kv.Key + "@" + kv.Value[0].ToString("0.#", inv) + "," + kv.Value[1].ToString("0.#", inv) + "," + kv.Value[2].ToString("0.#", inv));
+            lock (layout) foreach (var kv in layout) parts.Add(kv.Key + "@" + kv.Value[0].ToString("0.#", inv) + "," + kv.Value[1].ToString("0.#", inv) + "," + kv.Value[2].ToString("0.#", inv));
             return string.Join(";", parts.ToArray());
+        }
+
+        static void ParseLayout(string v, Dictionary<string, double[]> layout)
+        {
+            foreach (string part in v.Split(';'))
+            {
+                string[] f = part.Split('@');
+                if (f.Length != 2) continue;
+                string[] nums = f[1].Split(','); double x, y, w;
+                var inv = System.Globalization.CultureInfo.InvariantCulture; var st = System.Globalization.NumberStyles.Float;
+                if (nums.Length == 3 && double.TryParse(nums[0], st, inv, out x) && double.TryParse(nums[1], st, inv, out y) && double.TryParse(nums[2], st, inv, out w))
+                    layout[f[0].Trim()] = new[] { x, y, Math.Max(20, Math.Min(300, w)) };
+            }
+        }
+
+        static void ParseOut(string v, HashSet<string> set) { foreach (string mac in v.Split(';')) if (mac.Trim().Length > 0) set.Add(mac.Trim()); }
+
+        WallProfile ProfileAt(int k)   // while loading: profile k, made if it isn't there yet
+        {
+            while (Profiles.Count <= k) Profiles.Add(new WallProfile());
+            return Profiles[k];
+        }
+
+        string ProfilesText()
+        {
+            var o = new StringBuilder();
+            lock (Profiles)
+            {
+                o.Append("\r\nwall_name=" + Profiles[0].Name + "\r\nwall_version=2\r\nwall_profile=" + WallProfileIndex);
+                for (int k = 1; k < Profiles.Count; k++)
+                    o.Append("\r\nwall" + k + "_name=" + Profiles[k].Name + "\r\nwall" + k + "_layout=" + LayoutText(Profiles[k].Layout) +
+                             "\r\nwall" + k + "_out=" + OutText(Profiles[k].Out));
+            }
+            return o.ToString();
         }
         // other data files (favorites) go wherever the settings file lives
         public static string DataFile(string name)
@@ -2130,6 +2176,8 @@ namespace AuraBoxControl
                 else if (k == "show_notifications") s.ShowNotifications = v != "0";
                 else if (k == "hotkeys") s.Hotkeys = v != "0";
                 else if (k == "aqua_date") s.AquaDate = v == "1";
+                else if (k == "birthdays") s.Birthdays = v.Trim();
+                else if (k == "holidays_too") s.HolidaysToo = v != "0";
                 else if (k == "window_size")   // width,height[,max]
                 {
                     string[] wh = v.Split(','); int ww, hh;
@@ -2161,18 +2209,21 @@ namespace AuraBoxControl
                     string[] ids = v.Split(',');
                     for (int i = 0; i < ShowNowSlots && i < ids.Length; i++) if (ids[i].Trim().Length > 0) s.ShowNow[i] = ids[i].Trim();
                 }
-                else if (k == "layout")
-                    foreach (string part in v.Split(';'))
-                    {
-                        string[] f = part.Split('@');
-                        if (f.Length != 2) continue;
-                        string[] nums = f[1].Split(','); double x, y, w;
-                        var inv = System.Globalization.CultureInfo.InvariantCulture; var st = System.Globalization.NumberStyles.Float;
-                        if (nums.Length == 3 && double.TryParse(nums[0], st, inv, out x) && double.TryParse(nums[1], st, inv, out y) && double.TryParse(nums[2], st, inv, out w))
-                            s.Layout[f[0].Trim()] = new[] { x, y, Math.Max(20, Math.Min(300, w)) };
-                    }
-                else if (k == "wall_out")
-                    foreach (string mac in v.Split(';')) { if (mac.Trim().Length > 0) s.WallOut.Add(mac.Trim()); }
+                else if (k == "layout") ParseLayout(v, s.Profiles[0].Layout);
+                else if (k == "wall_out") ParseOut(v, s.Profiles[0].Out);
+                else if (k == "wall_name") { if (v.Trim().Length > 0) s.Profiles[0].Name = v.Trim(); }
+                else if (k == "wall_version") s.WallV2 = true;
+                else if (k == "wall_profile" && int.TryParse(v, out n)) s.WallProfileIndex = n;
+                else if (k.StartsWith("wall") && k.Length > 4 && char.IsDigit(k[4]))   // wall1_name=, wall1_layout=, wall1_out=
+                {
+                    string[] f = k.Split('_');
+                    int idx;
+                    if (f.Length != 2 || !int.TryParse(f[0].Substring(4), out idx) || idx < 1 || idx > 30) continue;
+                    var prof = s.ProfileAt(idx);
+                    if (f[1] == "name") prof.Name = v.Trim();
+                    else if (f[1] == "layout") ParseLayout(v, prof.Layout);
+                    else if (f[1] == "out") ParseOut(v, prof.Out);
+                }
                 else if (k == "anim_speeds")
                     foreach (string part in v.Split(','))
                     {
@@ -2188,6 +2239,8 @@ namespace AuraBoxControl
                 PlayItem.Find(s.Playlist, "weather").Seconds = s.WeatherMinutes * 60;
             }
             s.Devices.RemoveAll(d => d != s.Devices[0] && d.Mac.Length == 0);   // gaps left by removed devices
+            for (int k = s.Profiles.Count - 1; k >= 1; k--) if (string.IsNullOrEmpty(s.Profiles[k].Name)) s.Profiles.RemoveAt(k);   // gaps
+            s.WallProfileIndex = Math.Max(0, Math.Min(s.Profiles.Count - 1, s.WallProfileIndex));
             return s;
         }
 
@@ -2216,9 +2269,9 @@ namespace AuraBoxControl
                           "\r\ntheme=" + ThemeMode + "\r\nthermo_f=" + (ThermoFahrenheit ? 1 : 0) + "\r\nsteady_clock=" + (SteadyClock ? 1 : 0) + "\r\nstart_tray=" + (StartInTray ? 1 : 0) +
                           "\r\nclock_24=" + Clock24 + "\r\nlava_theme=" + LavaTheme + "\r\nlava_puddle=" + (LavaPuddle ? 1 : 0) +
                           "\r\nbounce_temp=" + (BounceTemp ? 1 : 0) + "\r\nonly_on_items=" + (OnlyOnItems ? 1 : 0) + "\r\naudio_aux=" + (AudioAux ? 1 : 0) + "\r\ncountdown=" + CountdownMinutes + "\r\ncountdown_to_date=" + (CountdownToDate ? 1 : 0) +
-                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nselected_device=" + SelectedDevice +"\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ngallery_animated_only=" + (GalleryAnimatedOnly ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\nditoo_brightness=" + DitooBrightness + "\r\ngallery_page_size=" + GalleryPageSize + "\r\ngallery_thumb=" + GalleryThumb +"\r\nfm_mhz=" + FmMhz.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + "\r\nhotkeys=" + (Hotkeys ? 1 : 0) + "\r\naqua_date=" + (AquaDate ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
+                          "\r\ngallery_animate=" + (GalleryAnimate ? 1 : 0) + "\r\ncheck_updates=" + (CheckUpdates ? 1 : 0) + "\r\nselected_device=" + SelectedDevice +"\r\nfavorite_sort=" + FavoriteSort + (WindowW > 0 ? "\r\nwindow_size=" + WindowW + "," + WindowH + (WindowMax ? ",max" : "") : "") + "\r\ngallery_english=" + (TranslateNames ? 1 : 0) + "\r\ngallery_animated_only=" + (GalleryAnimatedOnly ? 1 : 0) + "\r\ndivoom_account=" + DivoomEmail.Replace("|", "") + "|" + DivoomUserId + "|" + DivoomToken + "\r\naura_clock_color=" + AuraClockColor + "\r\ntivoo_vivid=" + TivooVivid + "\r\nditoo_brightness=" + DitooBrightness + "\r\ngallery_page_size=" + GalleryPageSize + "\r\ngallery_thumb=" + GalleryThumb +"\r\nfm_mhz=" + FmMhz.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "\r\ntivoo_clock=" + TivooClockStyle + "|" + (TivooClockWeather ? 1 : 0) + "|" + (TivooClockTemp ? 1 : 0) + "|" + (TivooClockCalendar ? 1 : 0) + "|" + TivooClockColor.ToString("X6") + "\r\ncountdown_until=" + CountdownUntil.ToString("yyyy-MM-dd HH:mm", inv) + "\r\nshow_notifications=" + (ShowNotifications ? 1 : 0) + "\r\nhotkeys=" + (Hotkeys ? 1 : 0) + "\r\naqua_date=" + (AquaDate ? 1 : 0) + "\r\nbirthdays=" + Birthdays + "\r\nholidays_too=" + (HolidaysToo ? 1 : 0) + (HasWindowPos ? "\r\nwindow=" + WindowX + "," + WindowY : "") +
                           "\r\ntext_message=" + TextMessage.Replace("\r", " ").Replace("\n", " ") + "\r\ntext_font=" + TextFont +
-                          "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nlayout=" + LayoutText() + "\r\nwall_out=" + WallOutText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
+                          "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nlayout=" + LayoutText(Profiles[0].Layout) + "\r\nwall_out=" + OutText(Profiles[0].Out) + ProfilesText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
                           "\r\nsleep=" + SleepMinutes + ":" + SleepScene + ":" + (SleepOn ? 1 : 0) +
                           "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\ndevice_kind=" + Devices[0].Kind + "\r\n" +

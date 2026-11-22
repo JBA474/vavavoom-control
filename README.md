@@ -13,6 +13,9 @@ display that keeps going from the system tray.
 ## Features
 
 - **Two displays at once.** Each connected display has its own playlist; pick one at the top to control it.
+- **All Displays.** Animations that move from display to display, laid out as your displays stand. **Profiles**
+  group displays in different patterns (say, two AuraBoxes side by side, apart from the others), and different
+  profiles can play at the same time.
 - **Playlist.** Rotate any mix of items, each for its own length of time, and run it from the system tray.
   Random Favorite and Holiday Designs (whatever holiday is in season) pick something new each time.
 - **Clock.** A steady clock drawn by the app (no blinking colon), or the box's own clock. 12- or 24-hour.
@@ -25,7 +28,7 @@ display that keeps going from the system tray.
   - Mandelbrot Zoom: an endless dive into the Mandelbrot set, smooth-shaded on the Tivoo.
   - Aquarium: fish wander a planted tank with an air bubbler, and chase food flakes now and then.
   - Jellyfish: jellyfish bob in a glowing tank, pulsing their bells and trailing their tentacles.
-  - Days to Next Holiday: counts down to the next US holiday, with confetti on the day.
+  - Days to Next Holiday: counts down to the next US holiday or a birthday you add, with confetti on the day.
   - Snake Chase, Tetrix, Bouncing Balls, Brick Breaker.
   - Gem Miner: a miner tunnels after gems, zapping glow worms and dropping boulders on them.
   - Star Swarm: a rocket holds off waves of alien saucers, fighters and bombers that dive at it.
@@ -94,6 +97,7 @@ starts and runs them once it's up.
 | `--display <name>` | Picks a display, as its name shows at the top (`--display "Tiivoo 2"`). A `--tool` or `--mode` after it goes to that display. |
 | `--mode <animation>` | Plays an animation by its name or id (`--mode "Aquarium Clock"` or `--mode aquaclock`). `--mode playlist` resumes the playlist. |
 | `--tool <command>` | Runs a tool on a Tivoo, Ditoo Pro or Tiivoo 2 (the commands are below). |
+| `--wall "<profile>:<animation>"` | Plays an All Displays animation on a profile (`--wall "AuraBoxes:Bouncing Balls"`); `--wall "AuraBoxes:stop"` stops it. |
 | `--brightness <0-255>` | Sets the brightness, as the slider does (`--display "Tivoo" --brightness 128`). |
 | `--hide` | Sends the window to the tray. |
 | `--tray` | Starts hidden in the tray (used by "start with Windows"). |

@@ -3040,11 +3040,45 @@ namespace AuraBoxControl
         public HolidayCountdown() : this(10) { }
         public HolidayCountdown(int size) { N = size; Big = size == 16; }
 
-        // the next holiday on or after this day
+        // birthdays to count down to as well ("Name|month|day;..."), and whether the US holidays count too
+        static Day[] birthdays = new Day[0];
+        public static volatile bool HolidaysToo = true;
+        static readonly int[] PartyRgb = { 0xFF4FA0, 0x40C8FF, 0xFFD040, 0x80FF60 }, PartyI = { 5, 6, 3, 2 };
+
+        public static void SetBirthdays(string spec)
+        {
+            var list = new List<Day>();
+            foreach (var b in ParseBirthdays(spec))
+            {
+                string name = b.Key; int m = b.Value[0], d = b.Value[1];
+                list.Add(new Day { Name = name + (name.EndsWith("s", StringComparison.OrdinalIgnoreCase) ? "' Birthday" : "'s Birthday"),
+                                   Greeting = "Happy Birthday, " + name + "!", Rgb = PartyRgb, Index = PartyI,
+                                   Date = y => new DateTime(y, m, Math.Min(d, DateTime.DaysInMonth(y, m))) });   // Feb 29: the 28th in other years
+            }
+            birthdays = list.ToArray();
+        }
+
+        // "Name|month|day;..." as name -> { month, day }, in order, skipping anything that isn't a real date
+        public static List<KeyValuePair<string, int[]>> ParseBirthdays(string spec)
+        {
+            var o = new List<KeyValuePair<string, int[]>>();
+            foreach (string part in (spec ?? "").Split(';'))
+            {
+                string[] f = part.Split('|'); int m, d;
+                if (f.Length != 3 || f[0].Trim().Length == 0 || !int.TryParse(f[1], out m) || !int.TryParse(f[2], out d)) continue;
+                if (m < 1 || m > 12 || d < 1 || d > DateTime.DaysInMonth(2024, m)) continue;
+                o.Add(new KeyValuePair<string, int[]>(f[0].Trim(), new[] { m, d }));
+            }
+            return o;
+        }
+
+        // the next holiday or birthday on or after this day
         internal static Day Upcoming(DateTime today, out int days)
         {
             Day best = null; DateTime when = DateTime.MaxValue;
-            foreach (var h in Days)
+            var all = new List<Day>(birthdays);
+            if (HolidaysToo || all.Count == 0) all.AddRange(Days);   // with no birthdays it stays a holiday countdown
+            foreach (var h in all)
                 for (int y = today.Year; y <= today.Year + 1; y++)
                 {
                     var d = h.Date(y);

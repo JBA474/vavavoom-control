@@ -156,7 +156,7 @@ namespace AuraBoxControl
             new LiveAnim { Id = "jellyfish", Name = "Jellyfish", Make = () => new Jellyfish().Next, Make16 = () => new Jellyfish(16).Next,
                            About = "Glowing jellyfish in a dark tank: each bell squeezes to push itself along and opens to glide, tilting toward where it is going, its tentacles trailing behind each push and rippling." },
             new LiveAnim { Id = "nextholiday", Name = "Days to Next Holiday", Make = () => new HolidayCountdown().Next, Make16 = () => new HolidayCountdown(16).Next,
-                           About = "Counts the days to the next US holiday, from New Year's Day to Christmas, with its name scrolling by in its colors. On the day itself, confetti and a greeting." },
+                           About = "Counts the days to the next US holiday or birthday, with its name scrolling by in its colors. On the day itself, confetti and a greeting. Add birthdays with the button below." },
             new LiveAnim { Id = "lavaclock", Name = "Lava Clock", Make = () => new LavaClock(H24).Next, Make16 = () => Rgb16(new LavaClock(H24, 16).Next),
                            About = "Lava drifts, and at each new minute the ooze slowly gathers into the time, holds, then melts away." },
             new LiveAnim { Id = "countdown", Name = "Countdown Timer", Make = () => new Countdown().Next, Make16 = () => Rgb16(new Countdown(16).Next),
@@ -185,6 +185,7 @@ namespace AuraBoxControl
             foreach (var d in cfg.Devices) players.Add(NewPlayer(d, null));
             sel = players.Find(pl => pl.Cfg.Mac.Length > 0 && pl.Cfg.Mac == cfg.SelectedDevice) ?? players[0];   // the display picked last time
             startHidden = hidden || settings.StartInTray;
+            HolidayCountdown.SetBirthdays(cfg.Birthdays); HolidayCountdown.HolidaysToo = cfg.HolidaysToo;
             clock24 = cfg.Clock24; LavaClock.FixedTheme = cfg.LavaTheme; LavaClock.Puddle = cfg.LavaPuddle; Countdown.Minutes = cfg.CountdownMinutes;
             Countdown.Until = cfg.CountdownToDate ? cfg.CountdownUntil : DateTime.MinValue;
             HeartMonitor.Speed = () => cfg.SpeedOf("heart");   // its slider sets the heart rate
@@ -393,6 +394,7 @@ namespace AuraBoxControl
                 }
                 else if (c.StartsWith("tool:")) ToolCommand(arg, picked);
                 else if (c.StartsWith("mode:")) ModeCommand(arg, picked ?? sel);
+                else if (c.StartsWith("wall:")) WallCommand(arg);
                 else if (c.StartsWith("brightness:"))   // 0 - 255, as the slider; the named display, else the selected one
                 {
                     int v; var pl = picked ?? sel;
@@ -405,6 +407,22 @@ namespace AuraBoxControl
             }
         }
         Player picked;   // the display a command's --display named, for its --tool or --mode (none: as ToolPlayer picks)
+
+        // --wall "<profile>:<animation>" plays an All Displays animation on a profile, "<profile>:stop" stops it
+        void WallCommand(string spec)
+        {
+            int colon = spec.LastIndexOf(':');
+            string name = colon > 0 ? spec.Substring(0, colon).Trim() : spec.Trim(), what = colon > 0 ? spec.Substring(colon + 1).Trim() : "";
+            WallProfile prof; lock (cfg.Profiles) prof = cfg.Profiles.Find(pr => string.Equals(pr.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (prof == null) { status.Text = "No profile called \"" + name + "\""; return; }
+            var r = RunOf(prof);
+            if (what.Equals("stop", StringComparison.OrdinalIgnoreCase)) { if (r != null) StopWall(r, true); status.Text = "Stopped on " + prof.Name; return; }
+            var info = Array.Find(WallAnims, w => string.Equals(w.Name, what, StringComparison.OrdinalIgnoreCase) || string.Equals(w.Id, what, StringComparison.OrdinalIgnoreCase)
+                                                  || string.Equals(w.Id, "wall_" + what, StringComparison.OrdinalIgnoreCase));
+            if (info == null) { status.Text = "No animation called \"" + what + "\" (try \"Bouncing Balls\")"; return; }
+            if (WallLayout(prof).Count == 0) { status.Text = "No display ticked in " + prof.Name; return; }
+            PlayWall(prof, info);
+        }
 
         // --mode: a live animation by its id ("aquaclock") or name ("Aquarium Clock"), or "playlist" to resume the playlist
         void ModeCommand(string what, Player pl)
@@ -583,6 +601,7 @@ namespace AuraBoxControl
                 else if (args[i] == "--tool" && i + 1 < args.Length) parts.Add("tool:" + args[++i]);
                 else if (args[i] == "--mode" && i + 1 < args.Length) parts.Add("mode:" + args[++i]);
                 else if (args[i] == "--brightness" && i + 1 < args.Length) parts.Add("brightness:" + args[++i]);
+                else if (args[i] == "--wall" && i + 1 < args.Length) parts.Add("wall:" + args[++i]);
             }
             return string.Join(";", parts.ToArray());
         }
@@ -3241,6 +3260,67 @@ namespace AuraBoxControl
         }
 
         // asks for a line of text (a list's name); null when cancelled
+        // the birthdays Days to Next Holiday counts down to: a name and a month and day each (no year needed)
+        void EditBirthdays()
+        {
+            var list = HolidayCountdown.ParseBirthdays(cfg.Birthdays);
+            var months = System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.MonthNames;
+            using (var f = new Form { Text = "Birthdays", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+                                      StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(420, 330), Font = Font, ShowInTaskbar = false })
+            {
+                f.Controls.Add(new Label { Text = "Days to Next Holiday counts down to these too.", Location = new Point(14, 12), AutoSize = true });
+                var box = new ListBox { Location = new Point(14, 38), Size = new Size(392, 150), IntegralHeight = false };
+                f.Controls.Add(box);
+                f.Controls.Add(new Label { Text = "Name:", Location = new Point(14, 202), AutoSize = true });
+                var name = new TextBox { Location = new Point(70, 198), Width = 336 };
+                f.Controls.Add(name);
+                f.Controls.Add(new Label { Text = "Birthday:", Location = new Point(14, 238), AutoSize = true });
+                var month = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(84, 234), Width = 140 };
+                for (int m = 0; m < 12; m++) month.Items.Add(months[m]);
+                month.SelectedIndex = DateTime.Today.Month - 1;
+                var day = new NumericUpDown { Minimum = 1, Maximum = 31, Value = DateTime.Today.Day, Location = new Point(232, 234), Width = 60 };
+                month.SelectedIndexChanged += delegate { day.Maximum = DateTime.DaysInMonth(2024, month.SelectedIndex + 1); };   // 2024: Feb 29 allowed
+                f.Controls.Add(month); f.Controls.Add(day);
+                var add = new Button { Text = "Add", Location = new Point(304, 232), Size = new Size(102, 28) };
+                var remove = new Button { Text = "Remove", Location = new Point(14, 288), Size = new Size(102, 28) };
+                var done = new Button { Text = "Done", Location = new Point(304, 288), Size = new Size(102, 28), DialogResult = DialogResult.OK };
+                f.Controls.Add(add); f.Controls.Add(remove); f.Controls.Add(done);
+                f.AcceptButton = add; f.CancelButton = done;
+
+                Action fill = delegate
+                {
+                    list.Sort((a, b) => a.Value[0] != b.Value[0] ? a.Value[0] - b.Value[0] : a.Value[1] != b.Value[1] ? a.Value[1] - b.Value[1] : string.Compare(a.Key, b.Key, StringComparison.CurrentCultureIgnoreCase));
+                    box.Items.Clear();
+                    foreach (var b in list) box.Items.Add(b.Key + "  ·  " + months[b.Value[0] - 1] + " " + b.Value[1]);
+                    remove.Enabled = list.Count > 0;
+                };
+                add.Click += delegate
+                {
+                    string n = name.Text.Trim().Replace("|", "").Replace(";", "");
+                    if (n.Length == 0) { name.Focus(); return; }
+                    list.RemoveAll(b => string.Equals(b.Key, n, StringComparison.CurrentCultureIgnoreCase));   // same name: a new date
+                    list.Add(new KeyValuePair<string, int[]>(n, new[] { month.SelectedIndex + 1, (int)day.Value }));
+                    name.Clear(); name.Focus();
+                    fill();
+                };
+                remove.Click += delegate
+                {
+                    int k = box.SelectedIndex;
+                    if (k < 0 || k >= list.Count) return;
+                    list.RemoveAt(k); fill();
+                };
+                fill();
+                Theme.Prepare(f);
+                f.ShowDialog(this);
+            }
+            var parts = new List<string>();
+            foreach (var b in list) parts.Add(b.Key + "|" + b.Value[0] + "|" + b.Value[1]);
+            cfg.Birthdays = string.Join(";", parts.ToArray());
+            HolidayCountdown.SetBirthdays(cfg.Birthdays);
+            SaveSettings();
+            status.Text = list.Count == 0 ? "No birthdays in the countdown" : list.Count == 1 ? "1 birthday in the countdown" : list.Count + " birthdays in the countdown";
+        }
+
         string AskText(string title, string label, string initial)
         {
             using (var f = new Form { Text = title, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
@@ -3553,6 +3633,13 @@ namespace AuraBoxControl
             forMinutes.CheckedChanged += delegate { if (forMinutes.Checked) countdownChanged(); };
             toDate.CheckedChanged += delegate { if (toDate.Checked) countdownChanged(); };
             live.Controls.AddRange(countdownControls);
+            // Days to Next Holiday's options: birthdays to count down to, and whether the holidays count too
+            var birthdaysBtn = Btn("Birthdays…", 352, 126, 120, null);
+            var holidaysToo = new CheckBox { Text = "Count down to US holidays too", Location = new Point(218, 214), AutoSize = true, Checked = cfg.HolidaysToo };
+            var holidayControls = new Control[] { birthdaysBtn, holidaysToo };
+            birthdaysBtn.Click += delegate { EditBirthdays(); sim = null; };
+            holidaysToo.CheckedChanged += delegate { cfg.HolidaysToo = HolidayCountdown.HolidaysToo = holidaysToo.Checked; SaveSettings(); sim = null; };
+            live.Controls.AddRange(holidayControls);
             p.Controls.Add(live);
 
             bool picking = false;
@@ -3569,7 +3656,8 @@ namespace AuraBoxControl
                 var la = LiveAnims[pick.SelectedIndex];
                 title.Text = la.Name; about.Text = la.About; sim = null;
                 foreach (var c in countdownControls) c.Visible = la.Id == "countdown";
-                speedNote.Visible = la.Id != "countdown";
+                foreach (var c in holidayControls) c.Visible = la.Id == "nextholiday";
+                speedNote.Visible = la.Id != "countdown" && la.Id != "nextholiday";
                 speedLabel.Text = la.Id == "heart" ? "Rate:" : "Speed:";
                 picking = true; speed.Value = cfg.SpeedOf(la.Id); picking = false;
                 showRate();
@@ -3968,28 +4056,43 @@ namespace AuraBoxControl
             new WallAnimInfo { Id = "wall_rainbow", Name = "Rainbow Sweep", Make = () => new WallRainbow(),
                                About = "Rainbow bands sweep across all the displays as one picture, slowly turning. Handy for lining up the layout." },
         };
-        const string WallTag = "All Displays: ";   // what a display's job shows while it is part of one
+        // a profile's animation as it plays: several profiles can play at once, each on its own displays. A display
+        // belongs to the one it joined last (its job shows that run's Tag)
+        class WallRun
+        {
+            public WallProfile Profile; public WallAnimInfo Info; public string Tag;
+            public Thread Thread; public volatile bool Stop;
+            public readonly Dictionary<Player, int[]> Frames = new Dictionary<Player, int[]>();
+            public readonly List<Player> Resume = new List<Player>();   // displays whose playlists paused for it, resumed on Stop
+        }
+        readonly List<WallRun> wallRuns = new List<WallRun>();
+        WallProfile wallProf;   // the profile the page shows
 
-        Thread wallThread; volatile bool wallStop; volatile WallAnimInfo wallPlaying;
-        readonly List<Player> wallResume = new List<Player>();   // displays whose playlists paused for it, resumed on Stop
-        readonly Dictionary<Player, int[]> wallFrames = new Dictionary<Player, int[]>();
+        WallRun RunOf(WallProfile prof) { lock (wallRuns) return wallRuns.Find(r => r.Profile == prof); }
+        static string WallTagOf(WallProfile prof, WallAnimInfo info) { return prof.Name + ": " + info.Name; }
 
-        // the paired displays and their screens as they stand (all: also the ones left out of the animations across all
-        // displays). Only 16 x 16 and bigger take part: the AuraBox's 10 x 10 and 8 colors don't fit in. A display new
-        // to the layout goes to the right of the others.
-        List<KeyValuePair<Player, WallScreen>> WallLayout(bool all = false)
+        // the paired displays and their screens as they stand in a profile (all: also the ones left out of it). A
+        // display new to a profile goes to the right of the others; it starts left out, except a 16 x 16 or bigger one
+        // in the first profile (All Displays), as before profiles
+        List<KeyValuePair<Player, WallScreen>> WallLayout(WallProfile prof, bool all = false)
         {
             var o = new List<KeyValuePair<Player, WallScreen>>();
-            var list = new List<Player>(players).FindAll(pl => pl.Box.Size >= 16);
-            lock (cfg.Layout)
+            var list = new List<Player>(players).FindAll(pl => pl.Cfg.Mac.Length > 0);
+            bool first; lock (cfg.Profiles) first = cfg.Profiles.Count > 0 && cfg.Profiles[0] == prof;
+            lock (prof.Layout)
             {
-                double nextX = 0; double[] v;
-                foreach (var pl in list) if (pl.Cfg.Mac.Length > 0 && cfg.Layout.TryGetValue(pl.Cfg.Mac, out v)) nextX = Math.Max(nextX, v[0] + v[2] + 20);
+                // new ones go in a row below the others, spaced so their names don't run into each other
+                double nextX = double.MaxValue, rowY = 0; double[] v; bool any = false;
+                foreach (var pl in list) if (prof.Layout.TryGetValue(pl.Cfg.Mac, out v)) { any = true; nextX = Math.Min(nextX, v[0]); rowY = Math.Max(rowY, v[1] + v[2] + 40); }
+                if (!any) nextX = 0;
                 foreach (var pl in list)
                 {
-                    if (pl.Cfg.Mac.Length == 0) continue;
-                    if (!cfg.Layout.TryGetValue(pl.Cfg.Mac, out v)) { v = new[] { nextX, 0, 70.0 }; cfg.Layout[pl.Cfg.Mac] = v; nextX += v[2] + 20; }
-                    if (!all && WallLeftOut(pl)) continue;
+                    if (!prof.Layout.TryGetValue(pl.Cfg.Mac, out v))
+                    {
+                        v = new[] { nextX, rowY, pl.Box.Size >= 16 ? 70.0 : 65.0 }; prof.Layout[pl.Cfg.Mac] = v; nextX += v[2] + 75;
+                        if (!first || pl.Box.Size < 16) lock (prof.Out) prof.Out.Add(pl.Cfg.Mac);
+                    }
+                    if (!all && WallLeftOut(prof, pl)) continue;
                     o.Add(new KeyValuePair<Player, WallScreen>(pl, new WallScreen { X = v[0], Y = v[1], Size = v[2], N = pl.Box.Size }));
                 }
             }
@@ -3999,110 +4102,124 @@ namespace AuraBoxControl
         List<WallTile> WallTiles()
         {
             var o = new List<WallTile>();
-            foreach (var kv in WallLayout(true))
+            var prof = wallProf;
+            if (prof == null) return o;
+            var run = RunOf(prof);
+            foreach (var kv in WallLayout(prof, true))
             {
                 var pl = kv.Key; int[] img = null;
-                if (wallPlaying != null && pl.Showing != null && pl.Showing.StartsWith(WallTag)) lock (wallFrames) wallFrames.TryGetValue(pl, out img);
-                lock (cfg.Layout)
-                    o.Add(new WallTile { Name = pl.Name, Place = cfg.Layout[pl.Cfg.Mac], Image = img ?? pl.Box.LastImage, Mode = pl.Box.LastMode, Connected = pl.Box.Connected,
-                                         Out = WallLeftOut(pl), Key = pl });
+                if (run != null && pl.Showing == run.Tag) lock (run.Frames) run.Frames.TryGetValue(pl, out img);
+                lock (prof.Layout)
+                    o.Add(new WallTile { Name = pl.Name, Place = prof.Layout[pl.Cfg.Mac], Image = img ?? pl.Box.LastImage, Mode = pl.Box.LastMode, Connected = pl.Box.Connected,
+                                         Out = WallLeftOut(prof, pl), Key = pl });
             }
             return o;
         }
 
-        bool WallLeftOut(Player pl) { lock (cfg.WallOut) return cfg.WallOut.Contains(pl.Cfg.Mac); }
+        static bool WallLeftOut(WallProfile prof, Player pl) { lock (prof.Out) return prof.Out.Contains(pl.Cfg.Mac); }
 
-        // a display joins the animation playing across all displays: its playlist pauses and its job sends its part
-        void WallJoin(Player pl, WallAnimInfo info)
+        // a display joins a profile's animation: its playlist pauses and its job sends its part. Taken from another
+        // profile's animation, it brings along that one's promise to resume its playlist
+        void WallJoin(Player pl, WallRun run)
         {
+            bool resume = false;
+            lock (wallRuns) foreach (var r in wallRuns) if (r != run) lock (r.Resume) resume |= r.Resume.Remove(pl);
             As(pl, delegate
             {
-                if (playlistOn) { PausePlaylist(); if (!wallResume.Contains(P)) wallResume.Add(P); }
-                StartJob(WallSendLoop);
-                showing = WallTag + info.Name;
+                if (playlistOn) { PausePlaylist(); resume = true; }
+                if (resume) lock (run.Resume) if (!run.Resume.Contains(P)) run.Resume.Add(P);
+                var mine = run;
+                StartJob(delegate { WallSendLoop(mine); });
+                showing = run.Tag;
             });
         }
 
         // a display leaves it (left out while it plays): back to its own playlist if it was playing one
-        void WallLeave(Player pl)
+        void WallLeave(Player pl, WallRun run)
         {
             As(pl, delegate
             {
-                if (showing != null && showing.StartsWith(WallTag)) StopJob();
-                if (wallResume.Remove(P) && !playlistOn && dcfg.Rotate) SetPlaylist(true);
+                if (showing == run.Tag) StopJob();
+                bool had; lock (run.Resume) had = run.Resume.Remove(P);
+                if (had && !playlistOn && dcfg.Rotate) SetPlaylist(true);
             });
         }
 
-        // the box by a display's name: in or out of the animations across all displays, at once if one is playing
+        // the box by a display's name: in or out of the profile, at once if it is playing
         void WallToggle(WallTile tile)
         {
-            var pl = tile.Key as Player;
-            if (pl == null || pl.Cfg.Mac.Length == 0) return;
+            var pl = tile.Key as Player; var prof = wallProf;
+            if (pl == null || prof == null || pl.Cfg.Mac.Length == 0) return;
             bool leave;
-            lock (cfg.WallOut) { leave = !cfg.WallOut.Contains(pl.Cfg.Mac); if (leave) cfg.WallOut.Add(pl.Cfg.Mac); else cfg.WallOut.Remove(pl.Cfg.Mac); }
+            lock (prof.Out) { leave = !prof.Out.Contains(pl.Cfg.Mac); if (leave) prof.Out.Add(pl.Cfg.Mac); else prof.Out.Remove(pl.Cfg.Mac); }
             SaveSettings();
-            var info = wallPlaying;
+            var run = RunOf(prof);
             if (leave)
             {
-                if (info != null) WallLeave(pl);
-                status.Text = pl.Name + " left out of All Displays" + (info != null ? ": back to its own playlist" : "; it keeps to its own playlist");
+                if (run != null && pl.Showing == run.Tag) WallLeave(pl, run);
+                status.Text = pl.Name + " left out of " + prof.Name + (run != null ? ": back to its own playlist" : "");
             }
             else
             {
-                if (info != null) WallJoin(pl, info);
-                status.Text = pl.Name + " is back in All Displays";
+                if (run != null) WallJoin(pl, run);
+                status.Text = pl.Name + " is in " + prof.Name;
             }
         }
 
         static double WallPace(int speed) { return Math.Pow(1.25, speed - 5); }   // speed 5 = as designed
 
-        // start an animation across every display: each one's playlist pauses and its job sends its part of the picture
-        void PlayWall(WallAnimInfo info)
+        // start an animation across a profile's displays: each one's playlist pauses and its job sends its part of the
+        // picture. Other profiles keep playing on their displays
+        void PlayWall(WallProfile prof, WallAnimInfo info)
         {
-            StopWall();
+            var old = RunOf(prof);
+            var run = new WallRun { Profile = prof, Info = info, Tag = WallTagOf(prof, info) };
+            if (old != null) { lock (old.Resume) run.Resume.AddRange(old.Resume); StopWall(old, false); }
             var anim = info.Make();
-            lock (wallFrames) wallFrames.Clear();
-            wallStop = false; wallPlaying = info;
-            foreach (var kv in WallLayout()) WallJoin(kv.Key, info);
+            lock (wallRuns) wallRuns.Add(run);
+            foreach (var kv in WallLayout(prof)) WallJoin(kv.Key, run);
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            wallThread = new Thread(delegate ()
+            run.Thread = new Thread(delegate ()
             {
                 double last = 0;
-                while (!wallStop)
+                while (!run.Stop)
                 {
                     double now = stopwatch.Elapsed.TotalSeconds, dt = Math.Min(0.2, now - last); last = now;
-                    var layout = WallLayout();
+                    var layout = WallLayout(prof);
                     // every display went on to something else: nothing left to draw for
-                    if (!layout.Exists(kv => kv.Key.Showing != null && kv.Key.Showing.StartsWith(WallTag))) break;
+                    if (!layout.Exists(kv => kv.Key.Showing == run.Tag)) break;
                     anim.SetArea(layout.ConvertAll(kv => kv.Value));
                     anim.Step(dt * WallPace(cfg.SpeedOf(info.Id)));
-                    foreach (var kv in layout) { var f = anim.Render(kv.Value); lock (wallFrames) wallFrames[kv.Key] = f; }
+                    foreach (var kv in layout) { var f = anim.Render(kv.Value); lock (run.Frames) run.Frames[kv.Key] = f; }
                     Thread.Sleep(40);
                 }
-                if (!wallStop) wallPlaying = null;
+                lock (wallRuns) wallRuns.Remove(run);
             }) { IsBackground = true };
-            wallThread.Start();
-            status.Text = info.Name + " playing on all displays";
+            run.Thread.Start();
+            status.Text = info.Name + " playing on " + prof.Name;
         }
 
-        void StopWall()
+        // stop a profile's animation; resume: its displays go back to the playlists it paused
+        void StopWall(WallRun run, bool resume)
         {
-            if (wallThread == null) return;
-            wallStop = true;
-            foreach (var pl in players) As(pl, delegate { if (showing != null && showing.StartsWith(WallTag)) StopJob(); });
-            wallThread.Join(1000);
-            wallThread = null; wallPlaying = null;
+            run.Stop = true;
+            foreach (var pl in players) As(pl, delegate { if (showing == run.Tag) StopJob(); });
+            if (run.Thread != null && run.Thread != Thread.CurrentThread) run.Thread.Join(1000);
+            lock (wallRuns) wallRuns.Remove(run);
+            if (!resume) return;
+            List<Player> back; lock (run.Resume) { back = new List<Player>(run.Resume); run.Resume.Clear(); }
+            foreach (var pl in back) As(pl, delegate { if (!playlistOn && dcfg.Rotate) SetPlaylist(true); });
         }
 
-        // a display's job while an animation runs across all of them: send its newest part as fast as its link allows,
-        // so a slower display skips frames instead of falling behind the others
-        void WallSendLoop()
+        // a display's job while a profile's animation runs: send its newest part as fast as its link allows, so a
+        // slower display skips frames instead of falling behind the others
+        void WallSendLoop(WallRun run)
         {
             var pl = P; int[] last = null;
-            while (!jobStop && !wallStop)
+            while (!jobStop && !run.Stop)
             {
                 int[] f;
-                lock (wallFrames) wallFrames.TryGetValue(pl, out f);
+                lock (run.Frames) run.Frames.TryGetValue(pl, out f);
                 if (f == null || f == last) { Thread.Sleep(10); continue; }
                 last = f;
                 if (!JobSend(delegate { box.ShowImage(f); })) { SetStatus("Waiting for " + pl.Name + " connection..."); Wait(5); }
@@ -4112,12 +4229,29 @@ namespace AuraBoxControl
         Panel BuildWallPage()
         {
             var p = NewPage();
+            lock (cfg.Profiles)
+            {
+                if (!cfg.WallV2)   // before profiles, the AuraBoxes weren't part of All Displays: keep them out of it
+                {
+                    foreach (var pl in players) if (pl.Cfg.Mac.Length > 0 && pl.Box.Size < 16) lock (cfg.Profiles[0].Out) cfg.Profiles[0].Out.Add(pl.Cfg.Mac);
+                    cfg.WallV2 = true;
+                }
+                wallProf = cfg.Profiles[Math.Max(0, Math.Min(cfg.Profiles.Count - 1, cfg.WallProfileIndex))];
+            }
+
             var lay = NewCard("Your Displays, As They Stand", 0, 0, W, 300);
-            var view = new WallView { Location = new Point(12, 36), Size = new Size(W - 24, 232), Tiles = WallTiles };
+            lay.Controls.Add(new Label { Text = "Profile:", Location = new Point(12, 43), AutoSize = true });
+            var profBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(70, 39), Width = 220 };
+            lay.Controls.Add(profBox);
+            var newProf = Btn("New…", 300, 36, 84, null);
+            var renameProf = Btn("Rename…", 390, 36, 92, null);
+            var deleteProf = Btn("Delete", 488, 36, 84, null);
+            lay.Controls.Add(newProf); lay.Controls.Add(renameProf); lay.Controls.Add(deleteProf);
+            var view = new WallView { Location = new Point(12, 74), Size = new Size(W - 24, 196), Tiles = WallTiles };
             view.Moved += delegate { SaveSettings(); };
             view.Toggled += WallToggle;
             lay.Controls.Add(view);
-            lay.Controls.Add(Note("Drag each 16×16 display to where it stands and its corner to its screen's width (mm). Untick one to leave it out.", 12, 274));
+            lay.Controls.Add(Note("Drag each display to where it stands and its corner to its screen's width (mm). Tick the displays in this profile.", 12, 274));
             p.Controls.Add(lay);
 
             var run = NewCard("Across All Displays", 0, 310, W, 210);
@@ -4128,10 +4262,78 @@ namespace AuraBoxControl
             var title = new Label { Location = new Point(218, 38), Size = new Size(W - 230, 26), Font = Theme.Semibold(12f), UseMnemonic = false };
             var about = new Label { Location = new Point(218, 68), Size = new Size(W - 230, 44) };
             var play = Btn("Play", 218, 116, 120, null, true);
+            var others = new Label { Location = new Point(350, 122), Size = new Size(W - 362, 22), Tag = "subtle", AutoEllipsis = true, UseMnemonic = false };
             run.Controls.Add(new Label { Text = "Speed:", Location = new Point(218, 166), AutoSize = true });
             var speed = new TrackBar { Minimum = 1, Maximum = 10, Location = new Point(270, 158), Width = 300, TickStyle = TickStyle.None };
-            run.Controls.Add(title); run.Controls.Add(about); run.Controls.Add(play); run.Controls.Add(speed);
+            run.Controls.Add(title); run.Controls.Add(about); run.Controls.Add(play); run.Controls.Add(others); run.Controls.Add(speed);
             p.Controls.Add(run);
+
+            bool loading = false;
+            Action fillProfiles = delegate
+            {
+                loading = true;
+                profBox.Items.Clear();
+                lock (cfg.Profiles) foreach (var pr in cfg.Profiles) profBox.Items.Add(pr.Name);
+                lock (cfg.Profiles) profBox.SelectedIndex = Math.Max(0, cfg.Profiles.IndexOf(wallProf));
+                loading = false;
+                run.Text = "Across " + wallProf.Name; run.Invalidate();
+                deleteProf.Enabled = profBox.Items.Count > 1;
+                var r = RunOf(wallProf);
+                if (r != null) { int k = Array.IndexOf(WallAnims, r.Info); if (k >= 0 && pick.SelectedIndex != k) { loading = true; pick.SelectedIndex = k; loading = false; title.Text = r.Info.Name; about.Text = r.Info.About; } }
+            };
+            profBox.SelectedIndexChanged += delegate
+            {
+                if (loading || profBox.SelectedIndex < 0) return;
+                lock (cfg.Profiles) { wallProf = cfg.Profiles[profBox.SelectedIndex]; cfg.WallProfileIndex = profBox.SelectedIndex; }
+                SaveSettings();
+                fillProfiles();
+                view.Invalidate();
+            };
+            newProf.Click += delegate
+            {
+                string name = AskText("New Profile", "Name for the new profile (a group of displays):", "");
+                if (name == null) return;
+                name = name.Trim().Replace("\r", " ").Replace("\n", " ");
+                if (name.Length == 0) return;
+                lock (cfg.Profiles)
+                {
+                    if (cfg.Profiles.Exists(pr => string.Equals(pr.Name, name, StringComparison.OrdinalIgnoreCase))) { status.Text = "There's already a profile called “" + name + "”"; return; }
+                    // it starts with every display where it stands now, all left out: tick the ones that belong
+                    var pr2 = new WallProfile { Name = name };
+                    lock (wallProf.Layout) foreach (var kv in wallProf.Layout) pr2.Layout[kv.Key] = (double[])kv.Value.Clone();
+                    foreach (var pl in players) if (pl.Cfg.Mac.Length > 0) pr2.Out.Add(pl.Cfg.Mac);
+                    cfg.Profiles.Add(pr2);
+                    wallProf = pr2; cfg.WallProfileIndex = cfg.Profiles.Count - 1;
+                }
+                SaveSettings(); fillProfiles(); view.Invalidate();
+                status.Text = "New profile “" + name + "”: tick the displays that belong in it";
+            };
+            renameProf.Click += delegate
+            {
+                var prof = wallProf;
+                if (RunOf(prof) != null) { status.Text = "Stop " + prof.Name + " first, then rename it"; return; }
+                string name = AskText("Rename Profile", "New name for “" + prof.Name + "”:", prof.Name);
+                if (name == null) return;
+                name = name.Trim().Replace("\r", " ").Replace("\n", " ");
+                if (name.Length == 0 || name == prof.Name) return;
+                lock (cfg.Profiles)
+                    if (cfg.Profiles.Exists(pr => pr != prof && string.Equals(pr.Name, name, StringComparison.OrdinalIgnoreCase))) { status.Text = "There's already a profile called “" + name + "”"; return; }
+                string old = prof.Name; prof.Name = name;
+                SaveSettings(); fillProfiles();
+                status.Text = "Renamed the profile “" + old + "” to “" + name + "”";
+            };
+            deleteProf.Click += delegate
+            {
+                var prof = wallProf;
+                lock (cfg.Profiles) if (cfg.Profiles.Count < 2) return;
+                if (MessageBox.Show(this, "Delete the profile “" + prof.Name + "”? The displays themselves aren't affected.", "Delete Profile",
+                                    MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+                var r = RunOf(prof);
+                if (r != null) StopWall(r, true);
+                lock (cfg.Profiles) { cfg.Profiles.Remove(prof); wallProf = cfg.Profiles[0]; cfg.WallProfileIndex = 0; }
+                SaveSettings(); fillProfiles(); view.Invalidate();
+                status.Text = "Deleted the profile “" + prof.Name + "”";
+            };
 
             bool picking = false;
             pick.SelectedIndexChanged += delegate
@@ -4140,7 +4342,9 @@ namespace AuraBoxControl
                 var w = WallAnims[pick.SelectedIndex];
                 title.Text = w.Name; about.Text = w.About;
                 picking = true; speed.Value = cfg.SpeedOf(w.Id); picking = false;
-                if (wallPlaying != null && wallPlaying != w) PlayWall(w);   // playing: switch to it
+                if (loading) return;
+                var r = RunOf(wallProf);
+                if (r != null && r.Info != w) PlayWall(wallProf, w);   // playing: switch to it
             };
             speed.ValueChanged += delegate
             {
@@ -4149,24 +4353,29 @@ namespace AuraBoxControl
             };
             play.Click += delegate
             {
-                if (wallPlaying != null)
+                var prof = wallProf; var r = RunOf(prof);
+                if (r != null)
                 {
-                    StopWall();
-                    foreach (var pl in wallResume) As(pl, delegate { if (!playlistOn && dcfg.Rotate) SetPlaylist(true); });   // back to their playlists
-                    status.Text = wallResume.Count > 0 ? "Stopped on all displays; playlists resumed" : "Stopped on all displays";
-                    wallResume.Clear();
+                    bool any; lock (r.Resume) any = r.Resume.Count > 0;
+                    StopWall(r, true);
+                    status.Text = "Stopped on " + prof.Name + (any ? "; playlists resumed" : "");
                 }
-                else if (WallLayout().Count == 0) status.Text = "No display to play on: tick one under its picture (16×16 displays only)";
-                else if (pick.SelectedIndex >= 0) PlayWall(WallAnims[pick.SelectedIndex]);
+                else if (WallLayout(prof).Count == 0) status.Text = "No display to play on: tick one under its picture";
+                else if (pick.SelectedIndex >= 0) PlayWall(prof, WallAnims[pick.SelectedIndex]);
             };
             pick.SelectedIndex = 0;
+            fillProfiles();
 
             var refresh = new System.Windows.Forms.Timer { Interval = 80 };
             refresh.Tick += delegate
             {
                 if (!p.Visible) return;
                 view.Invalidate();
-                play.Text = wallPlaying != null ? "Stop" : "Play";
+                play.Text = RunOf(wallProf) != null ? "Stop" : "Play";
+                var names = new List<string>();
+                lock (wallRuns) foreach (var r in wallRuns) if (r.Profile != wallProf) names.Add(r.Profile.Name + " (" + r.Info.Name + ")");
+                string text = names.Count > 0 ? "Also playing: " + string.Join(", ", names.ToArray()) : "";
+                if (others.Text != text) others.Text = text;
             };
             refresh.Start();
             return p;
