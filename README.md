@@ -59,6 +59,8 @@ display that keeps going from the system tray.
   - Light and dark themes.
   - Start with Windows, optionally hidden in the tray.
   - Reconnects to the box automatically.
+  - Give a display its own name (right-click the display list at the top → Rename Display), handy with two of the
+    same kind.
   - Settings backup and restore.
   - Command-line options and keyboard shortcuts for the tools (see below), for desktop shortcuts or a Stream Deck.
 
@@ -75,6 +77,8 @@ display that keeps going from the system tray.
 - An AuraBox, Tivoo, Ditoo Pro or Tiivoo 2 paired in Windows Bluetooth settings. They show up as names like
   **AuraBox-audio**, **Tivoo-audio**, **DitooPro-Audio** and **Divoom Tiivoo 2-Audio**; use PIN `0000` if asked.
   The app talks to the display over the Bluetooth serial port (SPP).
+- An AuraBox that connects but stays dark is a newer one that takes brightness differently: right-click the
+  display list at the top and tick **Newer AuraBox (Dark at Full Brightness)**.
 - For Tiivoo 2 clock faces from Divoom's store: a Divoom account (Gallery → Divoom Account). The password is used
   to sign in and isn't saved.
 
@@ -90,6 +94,7 @@ starts and runs them once it's up.
 | `--display <name>` | Picks a display, as its name shows at the top (`--display "Tiivoo 2"`). A `--tool` or `--mode` after it goes to that display. |
 | `--mode <animation>` | Plays an animation by its name or id (`--mode "Aquarium Clock"` or `--mode aquaclock`). `--mode playlist` resumes the playlist. |
 | `--tool <command>` | Runs a tool on a Tivoo, Ditoo Pro or Tiivoo 2 (the commands are below). |
+| `--brightness <0-255>` | Sets the brightness, as the slider does (`--display "Tivoo" --brightness 128`). |
 | `--hide` | Sends the window to the tray. |
 | `--tray` | Starts hidden in the tray (used by "start with Windows"). |
 
@@ -193,7 +198,7 @@ The protocol was worked out from the official Android app.
   |---|---|
   | `05` | Audio source (`00` Bluetooth, `02` line-in) |
   | `18` | Set time |
-  | `32` | Brightness |
+  | `32` | Brightness (`00`–`FF`; newer AuraBoxes take `00`–`64` and go dark above it) |
   | `40` / `41` | Sleep |
   | `43` | Alarm |
   | `44` | Picture |

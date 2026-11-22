@@ -19,7 +19,7 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("VaVaVoom Control")]
-[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.3.0")]
 
 namespace AuraBoxControl
 {
@@ -432,7 +432,13 @@ namespace AuraBoxControl
             Send(Proto.SetMode, new[] { (byte)m });
             Remember(null, m >= 0 && m < Proto.ModeNames.Length ? Proto.ModeNames[m] : "Mode " + m, () => SetMode(m));
         }
-        public override void SetBrightness(int v) { Send(Proto.Brightness, new[] { (byte)Math.Max(0, Math.Min(255, v)) }); }
+        // newer AuraBoxes take 0 - 100 and go dark at 255 (seen 2026-11-22); older ones take 0 - 255
+        public bool PercentBrightness;
+        public override void SetBrightness(int v)
+        {
+            v = Math.Max(0, Math.Min(255, v));
+            Send(Proto.Brightness, new[] { (byte)(PercentBrightness ? Math.Round(v * 100 / 255.0) : v) });
+        }
         public override void SetColor(int c)
         {
             Send(Proto.SetColor, new[] { (byte)(c & 7) });
@@ -1912,6 +1918,8 @@ namespace AuraBoxControl
     class DeviceSettings
     {
         public string Mac = "", Kind = "aurabox";
+        public string Label = "";   // a name given in the app ("AuraBox 2"), shown instead of the Bluetooth name; "" when none
+        public bool PercentBrightness;   // an AuraBox that takes brightness as 0 - 100 (devN_percent=1)
         public int Channel;
         public bool Rotate;   // the playlist was running when the app closed: run it again at the next start
         public List<PlayItem> Playlist = PlayItem.Defaults();
@@ -2046,6 +2054,8 @@ namespace AuraBoxControl
                 int n;
                 if (k == "mac") s.Mac = v;
                 else if (k == "device_kind") s.Devices[0].Kind = Device.KindOf(v);
+                else if (k == "device_name") s.Devices[0].Label = v.Trim();
+                else if (k == "device_percent") s.Devices[0].PercentBrightness = v.Trim() == "1";
                 else if (k.StartsWith("dev") && k.Length > 3 && char.IsDigit(k[3]))   // dev1=mac|kind|channel|rotate, dev1_playlist=...
                 {
                     string[] f = k.Split('_');
@@ -2062,6 +2072,8 @@ namespace AuraBoxControl
                         if (parts.Length > 3) d.Rotate = parts[3] != "0";
                     }
                     else if (f[1] == "playlist") d.Playlist = PlayItem.Parse(v);
+                    else if (f[1] == "name") d.Label = v.Trim();
+                    else if (f[1] == "percent") d.PercentBrightness = v.Trim() == "1";
                 }
                 else if (k == "channel" && int.TryParse(v, out n)) s.Channel = n;
                 else if (k == "brightness" && int.TryParse(v, out n)) s.Brightness = n;
@@ -2209,12 +2221,16 @@ namespace AuraBoxControl
                           "\r\ntext_color=" + TextColor + "\r\ntext_speed=" + TextSpeed + "\r\nanim_speeds=" + SpeedsText() + "\r\nlayout=" + LayoutText() + "\r\nwall_out=" + WallOutText() + "\r\nshow_now=" + string.Join(",", ShowNow) +
                           "\r\nalarm=" + AlarmHour + ":" + AlarmMinute + ":" + AlarmScene + ":" + (AlarmOn ? 1 : 0) +
                           "\r\nsleep=" + SleepMinutes + ":" + SleepScene + ":" + (SleepOn ? 1 : 0) +
-                          "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\ndevice_kind=" + Devices[0].Kind + "\r\n";
+                          "\r\nplaylist=" + PlayItem.Format(Playlist) + "\r\ndevice_kind=" + Devices[0].Kind + "\r\n" +
+                          (Devices[0].Label.Length > 0 ? "device_name=" + Devices[0].Label + "\r\n" : "") +
+                          (Devices[0].PercentBrightness ? "device_percent=1\r\n" : "");
             for (int i = 1; i < Devices.Count; i++)
             {
                 var d = Devices[i];
                 text += "dev" + i + "=" + d.Mac + "|" + d.Kind + "|" + d.Channel + "|" + (d.Rotate ? 1 : 0) + "\r\n" +
-                        "dev" + i + "_playlist=" + PlayItem.Format(d.Playlist) + "\r\n";
+                        "dev" + i + "_playlist=" + PlayItem.Format(d.Playlist) + "\r\n" +
+                        (d.Label.Length > 0 ? "dev" + i + "_name=" + d.Label + "\r\n" : "") +
+                        (d.PercentBrightness ? "dev" + i + "_percent=1\r\n" : "");
             }
             return text;
         }

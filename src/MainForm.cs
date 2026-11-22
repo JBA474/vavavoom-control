@@ -393,6 +393,15 @@ namespace AuraBoxControl
                 }
                 else if (c.StartsWith("tool:")) ToolCommand(arg, picked);
                 else if (c.StartsWith("mode:")) ModeCommand(arg, picked ?? sel);
+                else if (c.StartsWith("brightness:"))   // 0 - 255, as the slider; the named display, else the selected one
+                {
+                    int v; var pl = picked ?? sel;
+                    if (!int.TryParse(arg, out v) || pl == null) { status.Text = "Brightness takes 0 to 255"; continue; }
+                    v = Math.Max(0, Math.Min(MaxBrightness, v));
+                    As(pl, delegate { P.Brightness = v; if (box.Connected) box.SetBrightness(v); });
+                    if (pl == sel && bright.Value != v) bright.Value = v;
+                    status.Text = pl.Name + ": brightness " + v;
+                }
             }
         }
         Player picked;   // the display a command's --display named, for its --tool or --mode (none: as ToolPlayer picks)
@@ -573,6 +582,7 @@ namespace AuraBoxControl
                 else if (args[i] == "--hide") parts.Add("hide");
                 else if (args[i] == "--tool" && i + 1 < args.Length) parts.Add("tool:" + args[++i]);
                 else if (args[i] == "--mode" && i + 1 < args.Length) parts.Add("mode:" + args[++i]);
+                else if (args[i] == "--brightness" && i + 1 < args.Length) parts.Add("brightness:" + args[++i]);
             }
             return string.Join(";", parts.ToArray());
         }
@@ -735,6 +745,26 @@ namespace AuraBoxControl
             };
             Controls.Add(deviceBox);
             deviceBox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            var deviceMenu = new ContextMenuStrip();
+            deviceMenu.Items.Add("Rename Display…", null, delegate { RenameDisplay(sel); });
+            // a newer AuraBox takes brightness as 0 - 100 and goes dark when sent full brightness the older way
+            var percentItem = new ToolStripMenuItem("Newer AuraBox (Dark at Full Brightness)");
+            percentItem.Click += delegate
+            {
+                var pl = sel;
+                if (pl == null || !(pl.Box is AuraBox)) return;
+                pl.Cfg.PercentBrightness = !pl.Cfg.PercentBrightness;
+                Dim(pl); SaveSettings();
+                As(pl, delegate { if (box.Connected) box.SetBrightness(P.Brightness); });
+                status.Text = pl.Name + (pl.Cfg.PercentBrightness ? ": brightness sent as 0 to 100" : ": brightness sent as 0 to 255");
+            };
+            deviceMenu.Items.Add(percentItem);
+            deviceMenu.Opening += delegate
+            {
+                percentItem.Visible = sel != null && sel.Box is AuraBox;
+                percentItem.Checked = sel != null && sel.Cfg.PercentBrightness;
+            };
+            deviceBox.ContextMenuStrip = deviceMenu;
             var refresh = new Button { Text = "", Font = new Font(Theme.IconFont, 9f), Location = new Point(212 + W - 168, 13), Size = new Size(32, 26) };
             refresh.Click += delegate { RefreshDevices(); };
             Controls.Add(refresh);
@@ -925,7 +955,7 @@ namespace AuraBoxControl
                 // only Divoom displays (and any display already in use, whatever it is called)
                 string mac = PairedDevices.Mac(d.Value);
                 if (!Device.IsDisplay(d.Key) && !cfg.Devices.Exists(x => x.Mac == mac)) continue;
-                string item = DeviceName(d.Key) + "  (" + mac + ")";
+                string item = ShownName(d.Key, mac) + "  (" + mac + ")";
                 deviceBox.Items.Add(item);
                 if (pick == null && dcfg.Mac.Length == 0 && d.Key.IndexOf("AuraBox", StringComparison.OrdinalIgnoreCase) >= 0) pick = item;
                 if (dcfg.Mac.Length > 0 && item.Contains(dcfg.Mac)) pick = item;
@@ -1098,6 +1128,7 @@ namespace AuraBoxControl
         Player NewPlayer(DeviceSettings d, string pairedName)
         {
             var pl = new Player { Cfg = d, Box = Device.Create(d.Kind), Name = pairedName != null ? DeviceName(pairedName) : PairedName(d.Mac, d.Kind) };
+            if (d.Label.Length > 0) pl.Name = d.Label;
             // a Tiivoo 2 saved before it had its own kind (as a Tivoo): its name tells
             if (Device.KindOf(pl.Name) == "tiivoo2" && d.Kind != "tiivoo2") { d.Kind = "tiivoo2"; pl.Box = Device.Create(d.Kind); }
             Dim(pl);
@@ -1105,7 +1136,35 @@ namespace AuraBoxControl
         }
 
         // the Ditoo Pro's LEDs are brighter than the Tivoo's: scale it down so the same slider level looks the same
-        void Dim(Player pl) { if (pl.Name.IndexOf("ditoo", StringComparison.OrdinalIgnoreCase) >= 0) pl.Box.BrightnessScale = cfg.DitooBrightness / 100.0; }
+        // (and an AuraBox that takes brightness as 0 - 100 gets it that way)
+        void Dim(Player pl)
+        {
+            if (pl.Name.IndexOf("ditoo", StringComparison.OrdinalIgnoreCase) >= 0) pl.Box.BrightnessScale = cfg.DitooBrightness / 100.0;
+            var ab = pl.Box as AuraBox;
+            if (ab != null) ab.PercentBrightness = pl.Cfg.PercentBrightness;
+        }
+
+        // the name a paired display shows in the app: the one given to it here, else its tidied Bluetooth name
+        string ShownName(string pairedName, string mac)
+        {
+            var d = cfg.Devices.Find(x => x.Mac == mac);
+            return d != null && d.Label.Length > 0 ? d.Label : DeviceName(pairedName);
+        }
+
+        // give a display its own name (blank goes back to its Bluetooth name); the name shows in the display list,
+        // on the All Displays page and under Other Displays
+        void RenameDisplay(Player pl)
+        {
+            if (pl == null || pl.Cfg.Mac.Length == 0) return;
+            string to = AskText("Rename Display", "Name for “" + pl.Name + "” (" + pl.Cfg.Mac + "), blank for its Bluetooth name:", pl.Name);
+            if (to == null) return;
+            to = to.Trim().Replace("|", "/");
+            pl.Cfg.Label = to;
+            pl.Name = to.Length > 0 ? to : PairedName(pl.Cfg.Mac, pl.Cfg.Kind);
+            SaveSettings();
+            RefreshDevices();
+            status.Text = "This display is now “" + pl.Name + "”";
+        }
 
         // the display's name as paired in Windows ("Tivoo"), or its kind while it isn't paired
         static string PairedName(string mac, string kind)
